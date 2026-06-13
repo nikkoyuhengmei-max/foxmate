@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aquant"
+version = "0.1.0"
+description = "A-share quantitative trading system: data, research, backtest, paper/live trading, risk, compliance, monitoring."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "AQuant Contributors" }]
+keywords = ["quant", "trading", "a-share", "backtest", "risk", "compliance"]
+
+# Core dependencies only. Heavy / optional features live in extras below so the
+# core engine (data + backtest + risk + compliance + performance) stays light
+# enough to run on a personal PC without a complex install.
+dependencies = [
+    "numpy>=1.23",
+    "pandas>=1.5",
+]
+
+[project.optional-dependencies]
+# Web dashboard + REST API
+web = ["fastapi>=0.110", "uvicorn>=0.27", "jinja2>=3.1"]
+# Machine learning / forecasting
+ml = ["scikit-learn>=1.2"]
+# Charting in notebooks
+viz = ["matplotlib>=3.6"]
+# Everything
+all = [
+    "fastapi>=0.110", "uvicorn>=0.27", "jinja2>=3.1",
+    "scikit-learn>=1.2", "matplotlib>=3.6",
+]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+aquant = "aqs.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

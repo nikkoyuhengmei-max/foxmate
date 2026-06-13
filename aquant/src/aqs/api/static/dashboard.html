@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AQuant · A股量化交易系统</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --border:#21262d; --txt:#c9d1d9;
+    --muted:#8b949e; --accent:#2f81f7; --green:#3fb950; --red:#f85149; --yellow:#d29922;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:14px}
+  header{padding:16px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px}
+  header h1{font-size:18px;margin:0;font-weight:600}
+  header h1 span{color:var(--accent)}
+  .sub{color:var(--muted);font-size:12px}
+  .wrap{max-width:1280px;margin:0 auto;padding:20px 24px}
+  .controls{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:20px}
+  select,button,input{background:var(--panel);color:var(--txt);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px}
+  button{cursor:pointer;background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  button.secondary{background:var(--panel);color:var(--txt)}
+  button:hover{opacity:.9}
+  .grid{display:grid;gap:16px}
+  .kpis{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px}
+  .kpi .label{color:var(--muted);font-size:12px;margin-bottom:6px}
+  .kpi .value{font-size:22px;font-weight:700}
+  .pos{color:var(--green)} .neg{color:var(--red)}
+  .panels{grid-template-columns:1fr 1fr;margin-top:16px}
+  @media(max-width:900px){.panels{grid-template-columns:1fr}}
+  h3{margin:0 0 12px;font-size:14px;font-weight:600}
+  canvas{width:100%;height:240px;display:block}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:right;padding:6px 8px;border-bottom:1px solid var(--border)}
+  th:first-child,td:first-child{text-align:left}
+  .scroll{max-height:280px;overflow:auto}
+  .tag{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;background:#21262d;color:var(--muted)}
+  .heat td{text-align:center;border:1px solid var(--bg)}
+  .logline{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--muted);white-space:pre-wrap}
+  .alert{border-left:3px solid var(--yellow);padding:6px 10px;margin:4px 0;background:#1c1c10;font-size:12px}
+  .alert.crit{border-color:var(--red);background:#1c1010}
+  .banner{background:#1c1c10;border:1px solid var(--yellow);color:var(--yellow);padding:10px 14px;border-radius:8px;font-size:12px;margin-bottom:16px}
+  .loading{color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>🦊 <span>AQuant</span> · A股量化交易系统</h1>
+    <div class="sub">数据 → 研究 → 回测 → 模拟 → 实盘 → 风控 → 合规 → 绩效 · 本地部署</div>
+  </div>
+  <div class="sub" id="version">v—</div>
+</header>
+
+<div class="wrap">
+  <div class="banner">
+    ⚠️ 风险提示：本系统使用合成示例数据用于演示；回测/预测结果不代表真实业绩。程序化交易须遵守证监会及交易所规定，
+    实盘前请完成程序化交易报备（先报告、后交易）。市场有风险，投资需谨慎。
+  </div>
+
+  <div class="controls">
+    <label>策略
+      <select id="strategy"></select>
+    </label>
+    <label>撮合
+      <select id="fill">
+        <option value="next_open">次日开盘 (next_open)</option>
+        <option value="close">当日收盘 (close)</option>
+      </select>
+    </label>
+    <button onclick="runBacktest()">运行回测</button>
+    <span id="status" class="loading"></span>
+  </div>
+
+  <div class="grid kpis" id="kpis"></div>
+
+  <div class="grid panels">
+    <div class="card"><h3>净值曲线 (策略 vs 基准)</h3><canvas id="equity"></canvas></div>
+    <div class="card"><h3>回撤曲线</h3><canvas id="drawdown"></canvas></div>
+  </div>
+
+  <div class="grid panels">
+    <div class="card">
+      <h3>月度收益热力图</h3>
+      <div class="scroll" id="heatmap"></div>
+    </div>
+    <div class="card">
+      <h3>风控 & 合规</h3>
+      <div id="riskCompliance"></div>
+    </div>
+  </div>
+
+  <div class="grid panels">
+    <div class="card">
+      <h3>最近成交</h3>
+      <div class="scroll"><table id="trades"><thead><tr><th>日期</th><th>代码</th><th>方向</th><th>数量</th><th>价格</th><th>费用</th><th>标签</th></tr></thead><tbody></tbody></table></div>
+    </div>
+    <div class="card">
+      <h3>AI 走势分析 / 预测</h3>
+      <div class="controls" style="margin-bottom:10px">
+        <select id="fcSymbol"></select>
+        <button class="secondary" onclick="runForecast()">分析并预测</button>
+      </div>
+      <div id="forecast" class="sub">选择股票后点击「分析并预测」。预测仅供研究参考，不构成投资建议。</div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h3>系统日志</h3>
+    <div class="scroll" id="logs"></div>
+  </div>
+</div>
+
+<script>
+const fmtPct = v => (v*100).toFixed(2)+'%';
+const cls = v => v>=0 ? 'pos':'neg';
+
+async function api(path, opts){ const r = await fetch(path, opts); return r.json(); }
+
+async function init(){
+  const h = await api('/api/health'); document.getElementById('version').textContent = 'v'+h.version;
+  const strat = await api('/api/strategies');
+  const sel = document.getElementById('strategy');
+  for(const [k,name] of Object.entries(strat)){ const o=document.createElement('option'); o.value=k; o.textContent=name+' ('+k+')'; sel.appendChild(o); }
+  sel.value = 'multi_factor';
+  const syms = await api('/api/symbols');
+  const fc = document.getElementById('fcSymbol');
+  syms.forEach(s=>{ const o=document.createElement('option'); o.value=s.symbol; o.textContent=s.symbol+' '+s.name; fc.appendChild(o); });
+  runBacktest();
+}
+
+async function runBacktest(){
+  const status=document.getElementById('status'); status.textContent='回测运行中…';
+  const body={strategy:document.getElementById('strategy').value, fill_mode:document.getElementById('fill').value};
+  const res = await api('/api/backtest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  status.textContent='完成 · 数据版本 '+res.data_version;
+  renderKpis(res.metrics); 
+  drawLine('equity',[{data:res.equity_curve,color:'#2f81f7'},{data:res.benchmark_curve,color:'#8b949e'}]);
+  drawLine('drawdown',[{data:res.drawdown,color:'#f85149',fill:true}]);
+  renderHeatmap(res.monthly_returns);
+  renderRiskCompliance(res);
+  renderTrades(res.trades);
+  renderLogs(res.logs);
+}
+
+function renderKpis(m){
+  const items=[
+    ['累计收益', fmtPct(m.total_return), m.total_return],
+    ['年化收益', fmtPct(m.annual_return), m.annual_return],
+    ['超额收益', fmtPct(m.excess_return), m.excess_return],
+    ['最大回撤', fmtPct(m.max_drawdown), m.max_drawdown],
+    ['夏普比率', m.sharpe.toFixed(2), m.sharpe],
+    ['索提诺', m.sortino.toFixed(2), m.sortino],
+    ['卡玛', m.calmar.toFixed(2), m.calmar],
+    ['胜率', fmtPct(m.win_rate), m.win_rate],
+    ['Alpha(年)', fmtPct(m.alpha), m.alpha],
+    ['Beta', m.beta.toFixed(2), 0],
+    ['信息比率', m.information_ratio.toFixed(2), m.information_ratio],
+    ['波动率', fmtPct(m.volatility), 0],
+  ];
+  document.getElementById('kpis').innerHTML = items.map(([l,v,c])=>
+    `<div class="card kpi"><div class="label">${l}</div><div class="value ${c>=0?'pos':'neg'}">${v}</div></div>`).join('');
+}
+
+function renderHeatmap(rows){
+  if(!rows.length){document.getElementById('heatmap').innerHTML='<span class="sub">无数据</span>';return;}
+  const years=[...new Set(rows.map(r=>r.year))].sort();
+  const months=[...new Set(rows.map(r=>r.month))];
+  const map={}; rows.forEach(r=>map[r.year+'|'+r.month]=r.ret);
+  let html='<table class="heat"><thead><tr><th>年</th>'+months.map(m=>`<th>${m}</th>`).join('')+'</tr></thead><tbody>';
+  years.forEach(y=>{ html+=`<tr><td>${y}</td>`+months.map(m=>{const v=map[y+'|'+m];
+    if(v===undefined)return '<td></td>';
+    const a=Math.min(Math.abs(v)*6,0.85); const col=v>=0?`rgba(63,185,80,${a})`:`rgba(248,81,73,${a})`;
+    return `<td style="background:${col}">${(v*100).toFixed(1)}</td>`;}).join('')+'</tr>';});
+  document.getElementById('heatmap').innerHTML=html+'</tbody></table>';
+}
+
+function renderRiskCompliance(res){
+  const r=res.risk_review||{}, c=res.compliance||{}, mc=res.monte_carlo||{};
+  let html=`<table>
+    <tr><td>成交笔数</td><td>${r.n_trades||0}</td></tr>
+    <tr><td>换手率</td><td>${(r.turnover||0).toFixed(2)}</td></tr>
+    <tr><td>总交易成本</td><td>${(r.total_cost||0).toLocaleString()}</td></tr>
+    <tr><td>风控事件</td><td>${r.n_risk_events||0}</td></tr>
+    <tr><td>是否停机</td><td>${r.halted?'<span class="neg">是</span>':'否'}</td></tr>
+    <tr><td>申报/撤单</td><td>${c.orders||0} / ${c.cancels||0}</td></tr>
+    <tr><td>撤单比例</td><td>${fmtPct(c.cancel_ratio||0)}</td></tr>
+    <tr><td>每秒峰值</td><td>${c.peak_orders_per_second||0}</td></tr>
+    <tr><td>高频认定</td><td>${c.hft_flagged?'<span class="neg">是</span>':'否'}</td></tr>
+    <tr><td>审计链有效</td><td>${c.audit_valid?'<span class="pos">是</span>':'<span class="neg">否</span>'}</td></tr>
+    <tr><td>MC中位最大回撤</td><td>${mc.mc_median_max_drawdown!==undefined?fmtPct(mc.mc_median_max_drawdown):'—'}</td></tr>
+    <tr><td>MC亏损概率</td><td>${mc.mc_prob_loss!==undefined?fmtPct(mc.mc_prob_loss):'—'}</td></tr>
+  </table>`;
+  (res.risk_events||[]).forEach(e=>html+=`<div class="alert crit">[风控] ${e.message}</div>`);
+  (res.compliance_alerts||[]).forEach(e=>html+=`<div class="alert ${e.severity==='CRITICAL'?'crit':''}">[合规] ${e.message}</div>`);
+  document.getElementById('riskCompliance').innerHTML=html;
+}
+
+function renderTrades(trades){
+  const tb=document.querySelector('#trades tbody');
+  tb.innerHTML=trades.slice().reverse().map(t=>`<tr><td>${t.timestamp}</td><td>${t.symbol}</td>
+    <td class="${t.side==='buy'?'pos':'neg'}">${t.side==='buy'?'买':'卖'}</td>
+    <td>${t.quantity}</td><td>${t.price}</td><td>${t.cost}</td><td><span class="tag">${t.tag||''}</span></td></tr>`).join('');
+}
+
+function renderLogs(logs){
+  document.getElementById('logs').innerHTML=(logs||[]).slice().reverse().map(l=>`<div class="logline">${l}</div>`).join('');
+}
+
+async function runForecast(){
+  const sym=document.getElementById('fcSymbol').value;
+  const el=document.getElementById('forecast'); el.innerHTML='<span class="loading">分析中…</span>';
+  const r=await api('/api/forecast?symbol='+encodeURIComponent(sym));
+  if(r.error){el.innerHTML='<span class="neg">'+r.error+'</span>';return;}
+  const s=r.stats, f=r.forecast||{};
+  el.innerHTML=`<table>
+    <tr><td>最新价</td><td>${s.last_price}</td></tr>
+    <tr><td>区间收益</td><td class="${cls(s.lookback_return)}">${fmtPct(s.lookback_return)}</td></tr>
+    <tr><td>年化波动</td><td>${fmtPct(s.annual_volatility)}</td></tr>
+    <tr><td>最大回撤</td><td class="neg">${fmtPct(s.max_drawdown)}</td></tr>
+    <tr><td>趋势</td><td>${s.trend}</td></tr>
+    <tr><td>未来${f.horizon||5}日上涨概率</td><td class="${(f.prob_up||0)>=0.5?'pos':'neg'}">${f.prob_up!==undefined?fmtPct(f.prob_up):'—'}</td></tr>
+    <tr><td>方向判断</td><td>${f.direction||'—'}</td></tr>
+    <tr><td>样本外准确率</td><td>${f.test_accuracy!==undefined?fmtPct(f.test_accuracy):'—'} (模型:${f.model||'-'})</td></tr>
+  </table><div class="alert">${f.disclaimer||'预测仅供研究参考，不构成投资建议。'}</div>`;
+}
+
+// ------- minimal canvas line chart (no external deps) -------
+function drawLine(id, series){
+  const cv=document.getElementById(id); const dpr=window.devicePixelRatio||1;
+  const w=cv.clientWidth, h=cv.clientHeight; cv.width=w*dpr; cv.height=h*dpr;
+  const ctx=cv.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,w,h);
+  const pad={l:50,r:10,t:10,b:20};
+  let all=[]; series.forEach(s=>s.data.forEach(d=>all.push(d.value)));
+  if(!all.length)return; let min=Math.min(...all), max=Math.max(...all);
+  if(min===max){max+=1;min-=1;}
+  const n=Math.max(...series.map(s=>s.data.length));
+  const X=i=>pad.l+(w-pad.l-pad.r)*(i/Math.max(n-1,1));
+  const Y=v=>pad.t+(h-pad.t-pad.b)*(1-(v-min)/(max-min));
+  ctx.strokeStyle='#21262d'; ctx.fillStyle='#8b949e'; ctx.font='10px sans-serif';
+  for(let g=0;g<=4;g++){const v=min+(max-min)*g/4; const y=Y(v);
+    ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(w-pad.r,y);ctx.stroke();
+    ctx.fillText((v).toFixed(0),4,y+3);}
+  series.forEach(s=>{
+    ctx.strokeStyle=s.color; ctx.lineWidth=1.5; ctx.beginPath();
+    s.data.forEach((d,i)=>{const x=X(i),y=Y(d.value); i?ctx.lineTo(x,y):ctx.moveTo(x,y);});
+    ctx.stroke();
+    if(s.fill){ctx.lineTo(X(s.data.length-1),Y(min));ctx.lineTo(X(0),Y(min));ctx.closePath();
+      ctx.fillStyle=s.color+'33';ctx.fill();}
+  });
+}
+window.addEventListener('resize',()=>{});
+init();
+</script>
+</body>
+</html>
