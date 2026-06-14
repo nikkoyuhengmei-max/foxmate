@@ -61,7 +61,7 @@ class _LiveContext(Context):
         return self.order_target_value(symbol, pct * total, tag=tag)
 
     def get_position(self, symbol: str) -> Position:
-        return self._t.broker.portfolio.position(symbol)
+        return self._t.broker.get_portfolio().position(symbol)
 
     def get_account(self) -> dict:
         acct = self._t.broker.query_account()
@@ -104,6 +104,7 @@ class PaperTrader:
         risk_manager=None,
         compliance=None,
         live: bool = False,
+        broker=None,
     ) -> None:
         self.data = data
         self.strategy = strategy
@@ -112,7 +113,8 @@ class PaperTrader:
         self.compliance = compliance
         self.live = live
 
-        self.broker = SimulatedBroker(data, config)
+        # 默认用模拟券商（纸上交易）；传入 broker 可对接真实券商（如 QMTBroker）做实盘。
+        self.broker = broker if broker is not None else SimulatedBroker(data, config)
         self.oms = OrderManagementSystem(self.broker, on_event=self._on_oms_event)
         self.ems = ExecutionManagementSystem(lot_size=config.rules.lot_size)
 
@@ -165,7 +167,7 @@ class PaperTrader:
         if side == OrderSide.BUY:
             qty = (qty // lot) * lot
         else:
-            avail = self.broker.portfolio.position(symbol).available
+            avail = self.broker.get_portfolio().position(symbol).available
             qty = min(qty, avail)
             if qty < avail:
                 qty = (qty // lot) * lot
@@ -176,7 +178,7 @@ class PaperTrader:
                       created_at=self.now, tag=tag)
 
         if self.risk is not None:
-            ok, reason = self.risk.check_order(order, self.broker.portfolio, self.data, self.now)
+            ok, reason = self.risk.check_order(order, self.broker.get_portfolio(), self.data, self.now)
             if not ok:
                 order.status = OrderStatus.REJECTED
                 order.reason = reason
@@ -222,7 +224,7 @@ class PaperTrader:
         acct = self.broker.query_account()
         self.equity_curve.append((self.now, acct.total_value))
         if self.risk is not None:
-            self.risk.monitor(self.broker.portfolio, self.now, self)
+            self.risk.monitor(self.broker.get_portfolio(), self.now, self)
             if self.risk.halted and not self.oms.kill_switch:
                 self.log("风控触发停机，自动一键停止交易", "CRITICAL")
                 self.stop_trading()

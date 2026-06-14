@@ -168,6 +168,35 @@ class MarketDataManager:
         mgr.load_dataset(ds)
         return mgr
 
+    @classmethod
+    def from_qmt(
+        cls,
+        symbols,
+        start: str,
+        end: str,
+        benchmark: str = "000300.SH",
+        adjust: str = "qfq",
+        cache_dir: Optional[str] = None,
+        refresh: bool = False,
+        config: SystemConfig = DEFAULT_CONFIG,
+    ) -> "MarketDataManager":
+        """Build a manager from broker miniQMT data (xtquant).
+
+        Must run on a machine with the QMT/miniQMT client installed and logged in.
+        See :mod:`aqs.data.sources.qmt`.
+        """
+        from aqs.data.sources.qmt import QMTDataSource
+        from aqs.data.cache import cache_key, cached_build
+
+        def _build():
+            return QMTDataSource().build_dataset(list(symbols), start, end, benchmark=benchmark, adjust=adjust)
+
+        key = cache_key("qmt", symbols, start, end, benchmark, adjust)
+        ds = cached_build(_build, cache_dir, key, refresh)
+        mgr = cls(config)
+        mgr.load_dataset(ds)
+        return mgr
+
     def load_dataset(self, ds: SampleDataset) -> None:
         self._instruments = dict(ds.instruments)
         self._bars = {s: clean_bars(df) for s, df in ds.bars.items()}

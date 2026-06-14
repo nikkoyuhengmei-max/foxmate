@@ -19,4 +19,13 @@ __all__ = [
     "OrderManagementSystem",
     "ExecutionManagementSystem",
     "PaperTrader",
+    "QMTBroker",
 ]
+
+
+def __getattr__(name):  # lazy import so package loads without xtquant
+    if name == "QMTBroker":
+        from aqs.trading.qmt_broker import QMTBroker
+
+        return QMTBroker
+    raise AttributeError(name)

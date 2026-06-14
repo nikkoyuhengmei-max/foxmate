@@ -148,6 +148,29 @@ picks = Screener().screen(data, universe=universe, auction=auction, top_n=8)
 > 因子权重在 `ScreenConfig.weights` 可调。选股结果仅为量化参考，不构成投资建议。
 > 注：日线只能到上一收盘；要"过去 24 小时/分钟级"需接 iFinD 分钟(wsi)/实时数据，接上后即可扩展周期。
 
+## 实时行情 + 集合竞价 + 实盘下单：券商 miniQMT（xtquant）
+
+要做到**盘中实时、集合竞价、真正下单**，用券商的 **miniQMT**（开一个普通证券账户、向券商申请 QMT 权限即可，免数据费）。
+需在装有并登录 QMT/miniQMT 客户端的机器上运行，并安装 `xtquant`。
+
+- 行情：`MarketDataManager.from_qmt(...)`，集合竞价 `QMTDataSource().get_call_auction(...)`，实时订阅 `subscribe_realtime(...)`。
+- 实盘：`QMTBroker` 实现统一 `BrokerGateway`，可直接交给 `PaperTrader(..., live=True, broker=QMTBroker(...))` 驱动，
+  **复用全部风控 / 合规报备门禁 / 一键停止 / 审计日志**。
+
+```python
+from aqs.trading.qmt_broker import QMTBroker
+from aqs.trading.trader import PaperTrader
+
+broker = QMTBroker(account_id="资金账号", qmt_path=r"D:\\miniQMT\\userdata_mini", dry_run=True)  # 默认只记录不下单
+broker.connect()
+trader = PaperTrader(data, strategy, risk_manager=..., compliance=..., live=True, broker=broker)
+trader.run()           # 盘中也可循环 trader.step(now)
+# trader.stop_trading()  # 一键停止 + 全撤 + 只读
+```
+
+> ⚠️ 安全：`QMTBroker` 默认 `dry_run=True`（**只记录、不真实下单**），确认无误并完成程序化交易报备后，
+> 才显式改 `dry_run=False`。实盘前系统会强制校验报备信息完整性（先报告、后交易）。完整示例 `examples/live_trading_qmt.py`。
+
 ## 接入真实数据：Baostock（免费、免注册、**稳定不限流**，首选）
 
 `pip install baostock` 后即可用，自有数据服务器、基本不限流；一次 K 线查询即返回

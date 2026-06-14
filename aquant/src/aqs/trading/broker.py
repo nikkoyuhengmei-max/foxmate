@@ -67,6 +67,20 @@ class BrokerGateway(abc.ABC):
     @abc.abstractmethod
     def query_trades(self) -> List[Trade]: ...
 
+    @abc.abstractmethod
+    def get_portfolio(self) -> Portfolio:
+        """返回当前持仓/资金的 Portfolio 快照（供风控与 Context 使用）。"""
+
+    # 以下为模拟撮合所需的可选钩子；真实券商默认无操作（券商自身已处理 T+1/盯市）。
+    def set_time(self, when) -> None:  # noqa: D401
+        return None
+
+    def settle(self) -> None:
+        return None
+
+    def mark_prices(self) -> None:
+        return None
+
 
 class SimulatedBroker(BrokerGateway):
     """Fills orders against a :class:`MarketDataManager` at the current time."""
@@ -189,6 +203,9 @@ class SimulatedBroker(BrokerGateway):
             if px is not None:
                 pm[s] = px
         self.portfolio.mark_prices(pm)
+
+    def get_portfolio(self) -> Portfolio:
+        return self.portfolio
 
     def query_account(self) -> BrokerAccount:
         self.mark_prices()

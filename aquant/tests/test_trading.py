@@ -64,3 +64,28 @@ def test_live_blocked_without_filing(mdm):
     pt = PaperTrader(mdm, DoubleMA(), compliance=ComplianceMonitor(filing=ProgramTradingFiling()), live=True)
     with pytest.raises(PermissionError):
         pt.run()
+
+
+def test_paper_trader_accepts_injected_broker(mdm):
+    """PaperTrader 应能驱动任意 BrokerGateway（此处用 SimulatedBroker 验证注入路径）。"""
+    broker = SimulatedBroker(mdm)
+    pt = PaperTrader(mdm, DoubleMA(fast=5, slow=20), risk_manager=RiskManager(),
+                     compliance=ComplianceMonitor(), broker=broker)
+    eq = pt.run()
+    assert pt.broker is broker
+    assert len(eq) > 0 and eq.iloc[-1] > 0
+
+
+def test_broker_get_portfolio(mdm):
+    broker = SimulatedBroker(mdm)
+    pf = broker.get_portfolio()
+    assert pf is broker.portfolio
+
+
+def test_qmt_broker_graceful_without_xtquant():
+    import importlib.util
+    if importlib.util.find_spec("xtquant") is not None:
+        pytest.skip("xtquant 已安装")
+    from aqs.trading.qmt_broker import QMTBroker
+    with pytest.raises(ImportError):
+        QMTBroker(account_id="x", qmt_path="x")
