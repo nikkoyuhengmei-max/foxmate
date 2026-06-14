@@ -115,157 +115,93 @@ _ACTUAL: Dict[str, Any] = {"source": None, "is_real": False, "using_mock": False
 _UNIVERSE_CACHE: Dict[str, List[str]] = {}
 
 
-_INDEX_CODE = {"hs300": "000300", "zz500": "000905", "sz50": "000016"}
+_INDEX_MIN = {"hs300": 250, "zz500": 450, "all": 1000, "sz50": 40}
 # 最近一次 universe 加载的元信息（供状态栏展示）
 _LAST_UNIVERSE_META: Dict[str, Any] = {}
 
 
-def _universe_cache_path(name: str) -> str:
-    return os.path.join(DATA_CFG["cache_dir"], f"universe_{name}.csv")
+def load_universe(name, source: Optional[str] = None, use_cache: bool = True,
+                  refresh: bool = False) -> Dict[str, Any]:
+    """加载股票池，返回 {name, source, size, symbols, cache_file, updated_at, error, errors}。
 
-
-def _ak_index_constituents(name: str) -> List[str]:
-    """用 AkShare 获取指数成分股代码（带交易所后缀）。"""
-    import akshare as ak  # type: ignore
-    from aqs.data.directory import _infer_exchange
-
-    sym = _INDEX_CODE[name]
-    out: List[str] = []
-    for fn in ("index_stock_cons_csindex", "index_stock_cons"):
-        try:
-            df = getattr(ak, fn)(symbol=sym)
-        except Exception:
-            continue
-        if df is None or df.empty:
-            continue
-        col = next((c for c in df.columns if ("成分券代码" in c) or ("成份券代码" in c)
-                    or c in ("品种代码", "代码", "con_code", "成分股代码")), None)
-        if col is None:
-            continue
-        for x in df[col].tolist():
-            c = str(x).strip().zfill(6)
-            if c.isdigit() and len(c) == 6:
-                out.append(f"{c}.{_infer_exchange(c)}")
-        if out:
-            return list(dict.fromkeys(out))
-    return []
-
-
-def load_universe(name, source: Optional[str] = None, use_cache: bool = True) -> Dict[str, Any]:
-    """加载股票池，返回 {name, source, size, symbols, cache_file, updated_at, error}。
-
-    指数成分：Baostock 失败自动尝试 AkShare；都失败则返回 error（不回退到小样本池）。
+    指数/全A：缓存 → AkShare → Baostock；都失败则 error（不回退到小样本池）。
     """
     if isinstance(name, (list, tuple)):
         return {"name": "custom", "source": "custom", "symbols": list(name), "size": len(name),
-                "cache_file": None, "updated_at": None, "error": None}
+                "cache_file": None, "updated_at": None, "error": None, "errors": []}
     key = str(name or "").lower()
 
     if key in ("", "default", "custom"):
         syms = list(DATA_CFG["symbols"])
         return {"name": "default", "source": "default", "symbols": syms, "size": len(syms),
-                "cache_file": None, "updated_at": None, "error": None}
+                "cache_file": None, "updated_at": None, "error": None, "errors": []}
 
     if key == "watchlist":
         from aqs.data import directory
         syms = [r["symbol"] for r in directory.watchlist()]
         return {"name": "watchlist", "source": "watchlist", "symbols": syms, "size": len(syms),
                 "cache_file": directory._WATCHLIST_CSV, "updated_at": None,
-                "error": None if syms else "自选股为空，请先加入自选。"}
+                "error": None if syms else "自选股为空，请先加入自选。", "errors": []}
 
-    if key in ("all", "broad"):
-        from aqs.data import directory
-        rows = directory.load_directory()
-        syms = [r["symbol"] for r in rows]
-        return {"name": "all", "source": "akshare/cache" if syms else "none", "symbols": syms,
-                "size": len(syms), "cache_file": directory._STOCKS_CSV, "updated_at": None,
-                "error": None if syms else "全A股列表获取失败，请检查 AkShare/网络。"}
+    if key in ("hs300", "zz500", "sz50", "all", "broad"):
+        from aqs.data import universe as U
+        key = "all" if key == "broad" else key
+        info = U.load(key, source=source, refresh=refresh or (not use_cache))
+        size = info["raw_count"]
+        err = None
+        if size == 0:
+            err = "；".join(info.get("errors") or []) or "数据源没有返回股票"
+        return {"name": key, "source": info["source"], "symbols": info["symbols"], "size": size,
+                "cache_file": info["cache_path"], "updated_at": info["updated_at"],
+                "error": err, "errors": info.get("errors", [])}
 
-    if key in _INDEX_CODE:
-        path = _universe_cache_path(key)
-        # 1) 缓存
-        if use_cache and source is None and os.path.exists(path):
-            try:
-                import csv as _csv
-                with open(path, encoding="utf-8") as fh:
-                    syms = [r["symbol"] for r in _csv.DictReader(fh) if r.get("symbol")]
-                if len(syms) >= 50:
-                    import datetime as __dt
-                    ts = __dt.datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M:%S")
-                    return {"name": key, "source": "cache", "symbols": syms, "size": len(syms),
-                            "cache_file": path, "updated_at": ts, "error": None}
-            except Exception:
-                pass
-        # 2) 实时获取：按 source 指定或 baostock→akshare
-        errors = []
-        order = [source] if source else ["baostock", "akshare"]
-        for src in order:
-            try:
-                if src == "baostock":
-                    from aqs.data.sources.baostock_source import fetch_index_constituents
-                    syms = fetch_index_constituents(key)
-                elif src == "akshare":
-                    syms = _ak_index_constituents(key)
-                else:
-                    continue
-                if syms and len(syms) >= 50:
-                    _save_universe_cache(key, syms)
-                    return {"name": key, "source": src, "symbols": syms, "size": len(syms),
-                            "cache_file": path, "updated_at": "刚刚", "error": None}
-                if syms:
-                    errors.append(f"{src} 仅返回 {len(syms)} 只")
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"{src}: {exc}")
-        return {"name": key, "source": "none", "symbols": [], "size": 0, "cache_file": path,
-                "updated_at": None, "error": f"获取 {key} 成分失败（{'; '.join(errors) or '数据源不可用'}）"}
-
-    # 未知 -> 默认
     syms = list(DATA_CFG["symbols"])
     return {"name": "default", "source": "default", "symbols": syms, "size": len(syms),
-            "cache_file": None, "updated_at": None, "error": None}
-
-
-def _save_universe_cache(name: str, symbols: List[str]) -> None:
-    import csv as _csv
-    path = _universe_cache_path(name)
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8", newline="") as fh:
-            w = _csv.writer(fh)
-            w.writerow(["symbol"])
-            for s in symbols:
-                w.writerow([s])
-    except Exception:
-        pass
+            "cache_file": None, "updated_at": None, "error": None, "errors": []}
 
 
 def resolve_universe(universe) -> List[str]:
     """解析 universe 为代码列表，并记录来源元信息（_LAST_UNIVERSE_META）。"""
     global _LAST_UNIVERSE_META
     info = load_universe(universe)
-    _LAST_UNIVERSE_META = {k: info[k] for k in ("name", "source", "size", "cache_file", "updated_at", "error")}
-    return info["symbols"]
+    _LAST_UNIVERSE_META = {k: info.get(k) for k in ("name", "source", "size", "cache_file", "updated_at", "error", "errors")}
+    return info.get("symbols", [])
+
+
+def universe_status(name: str) -> Dict[str, Any]:
+    """股票池诊断状态（供 /api/universe/status）。"""
+    info = load_universe(name)
+    diag = _LAST_SCREEN_DIAG if str(_LAST_SCREEN_DIAG.get("universe", "")).lower() == str(name).lower() else {}
+    gate = _INDEX_MIN.get(str(name).lower())
+    ok = not info.get("error") and (gate is None or info["size"] >= gate)
+    return {
+        "success": bool(ok),
+        "universe": info["name"],
+        "source": info["source"],
+        "raw_count": info["size"],
+        "after_basic_filter_count": diag.get("after_basic_filter_count"),
+        "after_liquidity_filter_count": diag.get("after_liquidity_filter_count"),
+        "final_count": diag.get("final_count"),
+        "cache_path": info["cache_file"],
+        "updated_at": info["updated_at"],
+        "errors": info.get("errors", []) + ([info["error"]] if info.get("error") else []),
+        "empty_reason": diag.get("empty_reason"),
+    }
 
 
 def _manager_for_universe(syms: List[str], config: SystemConfig, use_cache: bool = True):
-    """返回覆盖 ``syms`` 的数据管理器（不在当前池的标的按数据源临时拉取，缓存复用）。"""
-    mdm = get_data_manager(config)
-    missing = [s for s in syms if s not in mdm.symbols]
-    if not missing:
+    """为给定股票池构建数据管理器（真实模式下直接按 syms 取数，不依赖默认池）。"""
+    # 演示/示例模式：用示例数据并取交集
+    if DATA_CFG.get("demo_mode") or DATA_CFG["source"] == "sample":
+        mdm = get_data_manager(config)
         return mdm, [s for s in syms if s in mdm.symbols]
     src = DATA_CFG["source"]
-    if src not in ("baostock", "akshare"):
-        return mdm, [s for s in syms if s in mdm.symbols]
-    try:
-        common = dict(symbols=syms, start=DATA_CFG["start"], end=DATA_CFG["end"],
-                      benchmark=DATA_CFG["benchmark"], cache_dir=DATA_CFG["cache_dir"],
-                      refresh=not use_cache, config=config)
-        m = MarketDataManager.from_baostock(**common) if src == "baostock" else MarketDataManager.from_akshare(**common)
-        got = [s for s in syms if s in m.symbols]
-        return (m, got) if got else (mdm, [s for s in syms if s in mdm.symbols])
-    except Exception as exc:  # noqa: BLE001
-        print(f"[universe] 加载股票池失败，退回当前池：{exc}")
-        return mdm, [s for s in syms if s in mdm.symbols]
+    common = dict(symbols=syms, start=DATA_CFG["start"], end=DATA_CFG["end"],
+                  benchmark=DATA_CFG["benchmark"], cache_dir=DATA_CFG["cache_dir"],
+                  refresh=not use_cache, config=config)
+    m = MarketDataManager.from_baostock(**common) if src == "baostock" else MarketDataManager.from_akshare(**common)
+    got = [s for s in syms if s in m.symbols]
+    return m, got
 
 
 _MKTCAP_CACHE: Dict[str, Dict[str, float]] = {}
@@ -1178,6 +1114,38 @@ def refresh_real_data(
     return out
 
 
+# 最近一次选股的分层诊断（供 /api/universe/status 读取）
+_LAST_SCREEN_DIAG: Dict[str, Any] = {}
+
+
+def _screen_err(strategy: str, msg: str, diag: Dict[str, Any]) -> dict:
+    global _LAST_SCREEN_DIAG
+    diag.setdefault("final_count", 0)
+    _LAST_SCREEN_DIAG = diag
+    return {"strategy": strategy, "error": msg, "picks": [], "diagnostics": diag,
+            "is_real_data": bool(_ACTUAL["is_real"]), "source": active_source()}
+
+
+def _filter_diagnostics(mdm, syms: List[str], min_amount: float) -> Dict[str, Any]:
+    """分层统计：基础过滤(ST/停牌/退市) -> 流动性过滤 后剩余数量。"""
+    basic = 0
+    liq = 0
+    for s in syms:
+        inst = mdm.instrument(s)
+        if inst and inst.is_st:
+            continue
+        if not mdm.is_active(s):
+            continue
+        basic += 1
+        try:
+            amt = mdm.get_price(s, fields=["amount"])["amount"].dropna().tail(20).mean()
+        except Exception:
+            amt = None
+        if (not min_amount) or (amt is not None and amt >= min_amount):
+            liq += 1
+    return {"after_basic_filter_count": basic, "after_liquidity_filter_count": liq}
+
+
 def screen_stocks(
     strategy: str = "short_strength",
     top_n: int = 20,
@@ -1189,6 +1157,7 @@ def screen_stocks(
     max_market_cap: float = 3000e8,
     use_cache: bool = True,
     use_sentiment: bool = False,
+    lenient: bool = False,
     auction: Optional[dict] = None,
     save: bool = False,
     config: SystemConfig = DEFAULT_CONFIG,
@@ -1196,23 +1165,38 @@ def screen_stocks(
     """按所选策略画像筛选 Top N 候选股（含信号/选中原因/风险提示）。"""
     from aqs.research.screener import Screener, ScreenConfig, PROFILES, ShortStrengthProfile
 
+    diag: Dict[str, Any] = {"universe": str(universe) if universe else "default"}
     if universe is not None and str(universe) not in ("", "default"):
+        uni_key = str(universe).lower()
         resolved = resolve_universe(universe)
         meta = dict(_LAST_UNIVERSE_META)
         _ACTUAL["universe"] = meta
-        # 指数/全A 股票池数量异常 -> 直接报错，不回退到小样本池
-        if str(universe).lower() in ("hs300", "zz500", "sz50", "all"):
-            if meta.get("error") or meta.get("size", 0) < 50:
-                return {"strategy": strategy, "error": meta.get("error")
-                        or f"股票池数量异常，当前仅 {meta.get('size', 0)} 只，请检查数据源或股票池配置。",
-                        "picks": [], "universe_info": meta,
-                        "is_real_data": bool(_ACTUAL["is_real"]), "source": active_source()}
+        diag.update({"source": meta.get("source"), "raw_count": meta.get("size", 0),
+                     "cache_path": meta.get("cache_file"), "updated_at": meta.get("updated_at"),
+                     "errors": meta.get("errors", [])})
+        # 数量门槛：低于阈值直接报错，不运行模型，也不回退小样本池
+        gate = _INDEX_MIN.get(uni_key)
+        if uni_key == "watchlist" and meta.get("size", 0) < 1:
+            return _screen_err(strategy, "自选股为空，请先加入自选。", diag)
+        if meta.get("error"):
+            diag["empty_reason"] = "数据源没有返回股票（接口失败/缓存为空）"
+            return _screen_err(strategy, meta["error"], diag)
+        if gate and meta.get("size", 0) < gate:
+            return _screen_err(strategy, f"股票池数量异常，当前仅 {meta.get('size', 0)} 只（{uni_key} 期望≥{gate}），请检查数据源或股票池配置。", diag)
         mdm, syms = _manager_for_universe(resolved, config, use_cache=use_cache)
+        diag["loaded_count"] = len(syms)
+        if not syms:
+            diag["empty_reason"] = "行情数据未返回：数据源接口失败/网络/代码格式问题"
+            return _screen_err(strategy, "已取到成分股，但行情数据未返回（请检查 Baostock/AkShare 行情接口或网络）。", diag)
     else:
         mdm = get_data_manager(config)
         syms = list(mdm.symbols)
-        _ACTUAL["universe"] = {"name": "default", "source": "default", "size": len(syms),
+        _ACTUAL["universe"] = {"name": "default", "source": active_source(), "size": len(syms),
                                "cache_file": None, "updated_at": None, "error": None}
+        diag.update({"source": active_source(), "raw_count": len(syms), "loaded_count": len(syms)})
+
+    # 分层过滤诊断
+    diag.update(_filter_diagnostics(mdm, syms, min_amount if not lenient else min(min_amount, 1e7)))
 
     sessions = mdm.trading_dates(end=asof) if asof else mdm.trading_dates()
     asof_date = asof or (str(sessions[-1].date()) if len(sessions) else None)
@@ -1225,26 +1209,36 @@ def screen_stocks(
         if use_sentiment:
             names = {s: (mdm.instrument(s).name if mdm.instrument(s) else "") for s in syms}
             sentiment, sent_meta = _sentiment_records(syms, names=names, asof=asof, use_cache=use_cache)
-        df = predict_universe(mdm, universe=syms or None, asof=asof, top_n=top_n, sentiment=sentiment)
+        df = predict_universe(mdm, universe=syms or None, asof=asof, top_n=top_n, sentiment=sentiment,
+                              min_amount=(1e7 if lenient else 5e7))
         picks = df.reset_index().to_dict(orient="records") if not df.empty else []
+        diag["final_count"] = len(picks)
+        if not picks:
+            diag.setdefault("empty_reason", "因子/规则筛选过严，未筛出股票（可开启宽松模式或扩大股票池）")
+        global _LAST_SCREEN_DIAG
+        _LAST_SCREEN_DIAG = diag
         return {
             "strategy": "predictive_ranking", "strategy_name": "预测上涨模型",
             "horizon": "未来 3/5/10 个交易日",
             "asof": asof_date, "top_n": top_n,
             "universe": universe if isinstance(universe, str) else (f"custom({len(syms)})" if universe else "default"),
             "use_sentiment": bool(use_sentiment), "sentiment_meta": sent_meta,
+            "lenient": bool(lenient), "diagnostics": diag,
             "is_real_data": bool(_ACTUAL["is_real"]), "source": active_source(),
             "picks": picks, "disclaimer": DISCLAIMER,
         }
 
-    cfg = ScreenConfig(exclude_st=exclude_st, min_amount=min_amount)
+    eff_min_amount = min(min_amount, 1e7) if lenient else min_amount
+    cfg = ScreenConfig(exclude_st=exclude_st, min_amount=eff_min_amount)
     profile = strategy if strategy in PROFILES else "short_strength"
     # 短线强势：支持排除超大市值慢速蓝筹（尽力获取市值，取不到则按 N/A 跳过该过滤）
     market_caps = None
     prof_obj = profile
     if profile == "short_strength":
-        prof_obj = ShortStrengthProfile(exclude_slow_blue_chip=exclude_slow_blue_chip,
-                                        max_market_cap=max_market_cap)
+        kw = dict(exclude_slow_blue_chip=exclude_slow_blue_chip, max_market_cap=max_market_cap)
+        if lenient:  # 宽松模式：放宽强势硬条件
+            kw.update(ret5_min=0.0, amount_ratio_min=1.0, rsi_min=40.0, rsi_max=90.0, min_amount=1e7)
+        prof_obj = ShortStrengthProfile(**kw)
         if exclude_slow_blue_chip:
             market_caps = _get_market_caps(syms)
 
@@ -1261,6 +1255,10 @@ def screen_stocks(
     sessions = mdm.trading_dates(end=asof) if asof else mdm.trading_dates()
     asof_date = asof or (str(sessions[-1].date()) if len(sessions) else None)
     picks = df.reset_index().to_dict(orient="records") if not df.empty else []
+    diag["final_count"] = len(picks)
+    if not picks:
+        diag.setdefault("empty_reason", "因子/规则筛选过严，未筛出股票（可开启宽松模式或扩大股票池）")
+    _LAST_SCREEN_DIAG = diag
     out = {
         "strategy": profile,
         "strategy_name": PROFILES[profile].name,
@@ -1272,6 +1270,8 @@ def screen_stocks(
         "exclude_st": exclude_st,
         "use_sentiment": bool(use_sentiment),
         "sentiment_meta": sent_meta,
+        "lenient": bool(lenient),
+        "diagnostics": diag,
         "is_real_data": bool(_ACTUAL["is_real"]),
         "source": active_source(),
         "picks": picks,

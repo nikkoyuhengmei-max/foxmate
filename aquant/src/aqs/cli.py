@@ -142,7 +142,7 @@ def cmd_screen(args) -> int:
 def cmd_universe(args) -> int:
     name = getattr(args, "universe", None) or "hs300"
     src = getattr(args, "source", None)
-    info = service.load_universe(name, source=src)
+    info = service.load_universe(name, source=src, refresh=getattr(args, "refresh", False))
     print(f"\n股票池: {info['name']}  来源: {info['source']}  数量: {info['size']}")
     if info.get("cache_file"):
         print(f"缓存文件: {info['cache_file']}  更新时间: {info.get('updated_at') or '-'}")

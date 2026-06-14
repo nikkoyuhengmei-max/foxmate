@@ -107,6 +107,10 @@ def create_app() -> "FastAPI":
     def stock_detail(symbol: str = Query(...), strategy: str = "short_strength") -> Dict[str, Any]:
         return service.stock_detail(symbol, strategy=strategy)
 
+    @app.get("/api/universe/status")
+    def universe_status(universe: str = "hs300") -> Dict[str, Any]:
+        return service.universe_status(universe)
+
     @app.get("/api/predict")
     def predict_top(top_n: int = 20, universe: Optional[str] = None, horizon: int = 5,
                     use_sentiment: bool = False) -> Dict[str, Any]:
@@ -226,10 +230,11 @@ def create_app() -> "FastAPI":
                 exclude_slow_blue_chip=bool(payload.get("exclude_large_cap", payload.get("exclude_slow_blue_chip", True))),
                 use_cache=bool(payload.get("use_cache", True)),
                 use_sentiment=bool(payload.get("use_sentiment", False)),
+                lenient=bool(payload.get("lenient", False)),
             )
             if res.get("error"):
                 return {"success": False, "error": res["error"], "strategy": res.get("strategy"),
-                        "universe_info": res.get("universe_info")}
+                        "diagnostics": res.get("diagnostics")}
             if not res.get("picks"):
                 return {"success": True, "strategy": res["strategy"], "strategy_name": res.get("strategy_name"),
                         "asof_date": res["asof"], "data_source": res["source"], "is_real_data": res["is_real_data"],
@@ -245,6 +250,7 @@ def create_app() -> "FastAPI":
                 "is_real_data": res["is_real_data"],
                 "use_sentiment": res.get("use_sentiment", False),
                 "sentiment_meta": res.get("sentiment_meta"),
+                "diagnostics": res.get("diagnostics"),
                 "elapsed_seconds": round(time.time() - t0, 2),
                 "results": res["picks"],
                 "disclaimer": res["disclaimer"],

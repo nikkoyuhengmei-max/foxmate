@@ -99,6 +99,7 @@
       <label>数量 <input id="topN" type="number" value="20" min="5" max="100" style="width:70px"></label>
       <label class="sub"><input type="checkbox" id="exclBlue" checked onchange="runScreen()"> 排除超大市值慢速蓝筹</label>
       <label class="sub"><input type="checkbox" id="useSent" onchange="runScreen()"> 舆情因子(辅助)</label>
+      <label class="sub"><input type="checkbox" id="lenient" onchange="runScreen()"> 宽松模式</label>
       <button id="runScreenBtn" onclick="runScreen()">运行选股</button>
       <button id="runBtBtn" class="secondary" onclick="runBacktest()">策略历史表现</button>
       <span id="msg" class="sub"></span>
@@ -343,15 +344,23 @@ async function runScreen(){
   const timer=setInterval(()=>{si=Math.min(si+1,stages.length-1);sc.innerHTML='<div class="empty">'+stages[si]+'</div>';},1500);
   log('运行选股：'+currentStrategy+' Top'+top+(uni?(' 股票池='+uni):'')+(exb?' 排除慢蓝筹':''));
   try{
+    const len=document.getElementById('lenient').checked;
     const res=await api('/api/screen/run',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({strategy:currentStrategy,top:Number(top),universe:uni,exclude_large_cap:exb,use_cache:true,use_sentiment:window.useSent})},30000);
+      body:JSON.stringify({strategy:currentStrategy,top:Number(top),universe:uni,exclude_large_cap:exb,use_cache:true,use_sentiment:window.useSent,lenient:len})},30000);
     clearInterval(timer);
-    if(res.success===false){sc.innerHTML='<div class="neg">运行失败：'+(res.error||'未知错误')+'</div>';log('选股失败：'+res.error);return;}
+    if(res.success===false){
+      let h='<div class="neg" style="font-weight:600">运行失败：'+(res.error||'未知错误')+'</div>';
+      if(res.diagnostics){ h+='<details style="margin-top:8px"><summary class="sub" style="cursor:pointer">查看诊断详情</summary>'+diagHtml(res.diagnostics)+'</details>'; }
+      sc.innerHTML=h; log('选股失败：'+res.error); return;
+    }
+    window.lastDiag=res.diagnostics||null;
     // 适配 /api/screen/run 返回结构
     renderScreen({picks:res.results||[], strategy_name:res.strategy_name, asof:res.asof_date,
                   is_real_data:res.is_real_data, source:res.data_source});
     const dt=(res.elapsed_seconds!=null)?res.elapsed_seconds:((performance.now()-t0)/1000).toFixed(1);
-    document.getElementById('screenMeta').innerHTML+= ` · 用时 ${dt}s`;
+    const d=res.diagnostics;
+    const dtxt=d?` · 原始${d.raw_count??'-'}→基础${d.after_basic_filter_count??'-'}→流动性${d.after_liquidity_filter_count??'-'}→入选${d.final_count??'-'}`:'';
+    document.getElementById('screenMeta').innerHTML+= ` · 用时 ${dt}s${dtxt}`;
     log('选股完成，用时 '+dt+' 秒');
     await loadStatus();
     // 预测模型回测较慢 -> 不自动跑，提示手动；其它策略自动展示历史表现
@@ -365,6 +374,20 @@ async function runScreen(){
   }finally{ busy('runScreenBtn',false); screenRunning=false; }
 }
 function sigClass(s){return (s==='强势观察'||s==='买入候选')?'sig-buy':(s==='观察'||s==='回踩观察')?'sig-obs':(s==='过热谨慎')?'neg':'sig-ex';}
+function diagHtml(d){
+  if(!d)return '';
+  const r=(k)=>d[k]==null?'-':d[k];
+  let h='<table style="margin-top:6px">'
+    +`<tr><td class="lft">股票池</td><td>${r('universe')} / ${r('source')}</td></tr>`
+    +`<tr><td class="lft">原始数量</td><td>${r('raw_count')}</td></tr>`
+    +`<tr><td class="lft">载入行情</td><td>${r('loaded_count')}</td></tr>`
+    +`<tr><td class="lft">基础过滤后(剔除ST/停牌/退市)</td><td>${r('after_basic_filter_count')}</td></tr>`
+    +`<tr><td class="lft">流动性过滤后</td><td>${r('after_liquidity_filter_count')}</td></tr>`
+    +`<tr><td class="lft">最终入选</td><td>${r('final_count')}</td></tr>`;
+  if(d.empty_reason) h+=`<tr><td class="lft neg">变空原因</td><td class="lft neg">${d.empty_reason}</td></tr>`;
+  if(d.errors&&d.errors.length) h+=`<tr><td class="lft neg">错误</td><td class="lft neg">${d.errors.join('；')}</td></tr>`;
+  return h+'</table>';
+}
 function sentSigClass(s){return s==='负面风险'?'neg':(s==='过热谨慎')?'neg':(s==='热度上升'||s==='情绪偏正面')?'pos':'sig-ex';}
 function predSigClass(s){return s==='高潜力观察'?'sig-buy':s==='谨慎观察'?'sig-obs':s==='等待回调'?'sig-obs':'neg';}
 function renderScreen(res){
