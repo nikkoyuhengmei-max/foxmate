@@ -227,8 +227,11 @@ def create_app() -> "FastAPI":
                 use_cache=bool(payload.get("use_cache", True)),
                 use_sentiment=bool(payload.get("use_sentiment", False)),
             )
+            if res.get("error"):
+                return {"success": False, "error": res["error"], "strategy": res.get("strategy"),
+                        "universe_info": res.get("universe_info")}
             if not res.get("picks"):
-                return {"success": True, "strategy": res["strategy"], "strategy_name": res["strategy_name"],
+                return {"success": True, "strategy": res["strategy"], "strategy_name": res.get("strategy_name"),
                         "asof_date": res["asof"], "data_source": res["source"], "is_real_data": res["is_real_data"],
                         "elapsed_seconds": round(time.time() - t0, 2), "results": [],
                         "message": "没有筛选出符合条件的股票，请降低筛选条件或扩大股票池。",

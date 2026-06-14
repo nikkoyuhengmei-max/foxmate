@@ -27,11 +27,22 @@ from aqs.trading.trader import PaperTrader
 
 _DATA_CACHE: Dict[str, MarketDataManager] = {}
 
-# 默认蓝筹/各行业代表股池（可被 configure_data / 环境变量覆盖）
+# 默认快速池：各行业代表性流动性较好的真实 A 股（约 60 只），用于快速演示/默认。
+# 真正的全市场/指数成分通过 universe=hs300/zz500/all 动态加载。
 _DEFAULT_UNIVERSE = [
-    "600519.SH", "600036.SH", "601318.SH", "000333.SZ", "300750.SZ", "000001.SZ",
-    "600276.SH", "002594.SZ", "601899.SH", "600900.SH", "000651.SZ", "002415.SZ",
-    "600030.SH", "300059.SZ", "688981.SH", "601012.SH",
+    "600519.SH", "000858.SZ", "600809.SH", "000568.SZ", "002304.SZ",        # 白酒
+    "600036.SH", "000001.SZ", "601318.SH", "601166.SH", "600000.SH",        # 银行/保险
+    "601398.SH", "601288.SH", "601988.SH", "601328.SH", "601601.SH",
+    "000333.SZ", "000651.SZ", "600690.SH", "000100.SZ", "002415.SZ",        # 家电/消费电子
+    "300750.SZ", "002594.SZ", "601012.SH", "300274.SZ", "688599.SH",        # 新能源
+    "688981.SH", "688111.SH", "603501.SH", "002049.SZ", "000725.SZ",        # 半导体/电子
+    "600276.SH", "300760.SZ", "600196.SH", "000538.SZ", "603259.SH",        # 医药
+    "600030.SH", "600999.SH", "000776.SZ", "300059.SZ", "601688.SH",        # 券商
+    "600900.SH", "601985.SH", "600905.SH", "003816.SZ",                     # 电力
+    "600028.SH", "601857.SH", "600585.SH", "601899.SH", "603993.SH",        # 周期/资源
+    "600887.SH", "603288.SH", "000895.SZ", "600009.SH", "601111.SH",        # 消费/交运
+    "000002.SZ", "600048.SH", "002230.SZ", "600570.SH", "000063.SZ",        # 地产/计算机/通信
+    "002475.SZ", "002714.SZ", "300015.SZ", "300124.SZ", "601888.SH",
 ]
 
 
@@ -97,41 +108,143 @@ def configure_data(
 
 
 # 实际生效的数据来源（区分配置与回退结果）。
-_ACTUAL: Dict[str, Any] = {"source": None, "is_real": False, "using_mock": False, "error": None}
+_ACTUAL: Dict[str, Any] = {"source": None, "is_real": False, "using_mock": False, "error": None,
+                           "universe": None}
 
 # 指数成分股缓存
 _UNIVERSE_CACHE: Dict[str, List[str]] = {}
 
 
-def resolve_universe(universe) -> List[str]:
-    """把 universe（列表 / 'hs300' / 'zz500' / 'sz50' / 'all' / 'watchlist' / 'custom'）解析为代码列表。"""
-    if isinstance(universe, (list, tuple)):
-        return list(universe)
-    if not universe or universe in ("custom", "default"):
-        return list(DATA_CFG["symbols"])
-    name = str(universe).lower()
-    if name == "watchlist":
-        from aqs.data import directory
+_INDEX_CODE = {"hs300": "000300", "zz500": "000905", "sz50": "000016"}
+# 最近一次 universe 加载的元信息（供状态栏展示）
+_LAST_UNIVERSE_META: Dict[str, Any] = {}
 
-        syms = [r["symbol"] for r in directory.watchlist()]
-        return syms or list(DATA_CFG["symbols"])
-    if name in ("all", "broad"):
-        # 真·全A股(5000+)逐只取数过重；用 沪深300 ∪ 中证500 作为可行的"较广"市场池
-        merged = list(dict.fromkeys(resolve_universe("hs300") + resolve_universe("zz500")))
-        return merged or list(DATA_CFG["symbols"])
-    if name in ("hs300", "zz500", "sz50"):
-        if name in _UNIVERSE_CACHE:
-            return _UNIVERSE_CACHE[name]
+
+def _universe_cache_path(name: str) -> str:
+    return os.path.join(DATA_CFG["cache_dir"], f"universe_{name}.csv")
+
+
+def _ak_index_constituents(name: str) -> List[str]:
+    """用 AkShare 获取指数成分股代码（带交易所后缀）。"""
+    import akshare as ak  # type: ignore
+    from aqs.data.directory import _infer_exchange
+
+    sym = _INDEX_CODE[name]
+    out: List[str] = []
+    for fn in ("index_stock_cons_csindex", "index_stock_cons"):
         try:
-            from aqs.data.sources.baostock_source import fetch_index_constituents
+            df = getattr(ak, fn)(symbol=sym)
+        except Exception:
+            continue
+        if df is None or df.empty:
+            continue
+        col = next((c for c in df.columns if ("成分券代码" in c) or ("成份券代码" in c)
+                    or c in ("品种代码", "代码", "con_code", "成分股代码")), None)
+        if col is None:
+            continue
+        for x in df[col].tolist():
+            c = str(x).strip().zfill(6)
+            if c.isdigit() and len(c) == 6:
+                out.append(f"{c}.{_infer_exchange(c)}")
+        if out:
+            return list(dict.fromkeys(out))
+    return []
 
-            syms = fetch_index_constituents(name)
-            if syms:
-                _UNIVERSE_CACHE[name] = syms
-                return syms
-        except Exception as exc:  # noqa: BLE001
-            print(f"[universe] 获取 {name} 成分失败，使用默认股票池：{exc}")
-    return list(DATA_CFG["symbols"])
+
+def load_universe(name, source: Optional[str] = None, use_cache: bool = True) -> Dict[str, Any]:
+    """加载股票池，返回 {name, source, size, symbols, cache_file, updated_at, error}。
+
+    指数成分：Baostock 失败自动尝试 AkShare；都失败则返回 error（不回退到小样本池）。
+    """
+    if isinstance(name, (list, tuple)):
+        return {"name": "custom", "source": "custom", "symbols": list(name), "size": len(name),
+                "cache_file": None, "updated_at": None, "error": None}
+    key = str(name or "").lower()
+
+    if key in ("", "default", "custom"):
+        syms = list(DATA_CFG["symbols"])
+        return {"name": "default", "source": "default", "symbols": syms, "size": len(syms),
+                "cache_file": None, "updated_at": None, "error": None}
+
+    if key == "watchlist":
+        from aqs.data import directory
+        syms = [r["symbol"] for r in directory.watchlist()]
+        return {"name": "watchlist", "source": "watchlist", "symbols": syms, "size": len(syms),
+                "cache_file": directory._WATCHLIST_CSV, "updated_at": None,
+                "error": None if syms else "自选股为空，请先加入自选。"}
+
+    if key in ("all", "broad"):
+        from aqs.data import directory
+        rows = directory.load_directory()
+        syms = [r["symbol"] for r in rows]
+        return {"name": "all", "source": "akshare/cache" if syms else "none", "symbols": syms,
+                "size": len(syms), "cache_file": directory._STOCKS_CSV, "updated_at": None,
+                "error": None if syms else "全A股列表获取失败，请检查 AkShare/网络。"}
+
+    if key in _INDEX_CODE:
+        path = _universe_cache_path(key)
+        # 1) 缓存
+        if use_cache and source is None and os.path.exists(path):
+            try:
+                import csv as _csv
+                with open(path, encoding="utf-8") as fh:
+                    syms = [r["symbol"] for r in _csv.DictReader(fh) if r.get("symbol")]
+                if len(syms) >= 50:
+                    import datetime as __dt
+                    ts = __dt.datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M:%S")
+                    return {"name": key, "source": "cache", "symbols": syms, "size": len(syms),
+                            "cache_file": path, "updated_at": ts, "error": None}
+            except Exception:
+                pass
+        # 2) 实时获取：按 source 指定或 baostock→akshare
+        errors = []
+        order = [source] if source else ["baostock", "akshare"]
+        for src in order:
+            try:
+                if src == "baostock":
+                    from aqs.data.sources.baostock_source import fetch_index_constituents
+                    syms = fetch_index_constituents(key)
+                elif src == "akshare":
+                    syms = _ak_index_constituents(key)
+                else:
+                    continue
+                if syms and len(syms) >= 50:
+                    _save_universe_cache(key, syms)
+                    return {"name": key, "source": src, "symbols": syms, "size": len(syms),
+                            "cache_file": path, "updated_at": "刚刚", "error": None}
+                if syms:
+                    errors.append(f"{src} 仅返回 {len(syms)} 只")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{src}: {exc}")
+        return {"name": key, "source": "none", "symbols": [], "size": 0, "cache_file": path,
+                "updated_at": None, "error": f"获取 {key} 成分失败（{'; '.join(errors) or '数据源不可用'}）"}
+
+    # 未知 -> 默认
+    syms = list(DATA_CFG["symbols"])
+    return {"name": "default", "source": "default", "symbols": syms, "size": len(syms),
+            "cache_file": None, "updated_at": None, "error": None}
+
+
+def _save_universe_cache(name: str, symbols: List[str]) -> None:
+    import csv as _csv
+    path = _universe_cache_path(name)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="") as fh:
+            w = _csv.writer(fh)
+            w.writerow(["symbol"])
+            for s in symbols:
+                w.writerow([s])
+    except Exception:
+        pass
+
+
+def resolve_universe(universe) -> List[str]:
+    """解析 universe 为代码列表，并记录来源元信息（_LAST_UNIVERSE_META）。"""
+    global _LAST_UNIVERSE_META
+    info = load_universe(universe)
+    _LAST_UNIVERSE_META = {k: info[k] for k in ("name", "source", "size", "cache_file", "updated_at", "error")}
+    return info["symbols"]
 
 
 def _manager_for_universe(syms: List[str], config: SystemConfig, use_cache: bool = True):
@@ -302,6 +415,7 @@ def data_status() -> Dict[str, Any]:
         "data_date": str(sessions[-1].date()) if len(sessions) else None,
         "n_symbols": len(mgr.symbols),
         "error": _ACTUAL.get("error"),
+        "universe": _ACTUAL.get("universe"),
     })
     return base
 
@@ -1083,10 +1197,22 @@ def screen_stocks(
     from aqs.research.screener import Screener, ScreenConfig, PROFILES, ShortStrengthProfile
 
     if universe is not None and str(universe) not in ("", "default"):
-        mdm, syms = _manager_for_universe(resolve_universe(universe), config, use_cache=use_cache)
+        resolved = resolve_universe(universe)
+        meta = dict(_LAST_UNIVERSE_META)
+        _ACTUAL["universe"] = meta
+        # 指数/全A 股票池数量异常 -> 直接报错，不回退到小样本池
+        if str(universe).lower() in ("hs300", "zz500", "sz50", "all"):
+            if meta.get("error") or meta.get("size", 0) < 50:
+                return {"strategy": strategy, "error": meta.get("error")
+                        or f"股票池数量异常，当前仅 {meta.get('size', 0)} 只，请检查数据源或股票池配置。",
+                        "picks": [], "universe_info": meta,
+                        "is_real_data": bool(_ACTUAL["is_real"]), "source": active_source()}
+        mdm, syms = _manager_for_universe(resolved, config, use_cache=use_cache)
     else:
         mdm = get_data_manager(config)
         syms = list(mdm.symbols)
+        _ACTUAL["universe"] = {"name": "default", "source": "default", "size": len(syms),
+                               "cache_file": None, "updated_at": None, "error": None}
 
     sessions = mdm.trading_dates(end=asof) if asof else mdm.trading_dates()
     asof_date = asof or (str(sessions[-1].date()) if len(sessions) else None)

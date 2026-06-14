@@ -274,10 +274,15 @@ async function loadStatus(){
   const paper=s.has_trade_records?'<span class="pill real">有成交记录</span>':'<span class="pill off">无成交记录</span>';
   const sname=stratName();
   document.getElementById('demoToggle').checked=!!s.demo_mode;
+  const u=s.universe||{};
+  const usize = u.size!=null?u.size:s.n_symbols||0;
+  const usrc = u.source||'default';
+  const poolWarn = (['hs300','zz500','sz50','all'].includes(u.name) && usize<50) ? ' <span class="neg">⚠数量异常</span>':'';
+  let utip = u.cache_file? (' [缓存:'+u.cache_file+(u.updated_at?(' @'+u.updated_at):'')+']'):'';
   document.getElementById('statusBar').innerHTML=`
     <div class="item">数据源：<b>${s.actual_source||'-'}</b></div>
     <div class="item">数据日期：<b>${s.data_date||'-'}</b></div>
-    <div class="item">股票池：<b>${s.n_symbols||0} 只</b></div>
+    <div class="item" title="${utip}">股票池：<b>${usize} 只</b> <span class="sub">(${u.name||'default'}/${usrc})</span>${poolWarn}</div>
     <div class="item">当前策略：<b>${sname}</b></div>
     <div class="item">系统时间：<b>${s.system_time||'-'}</b></div>
     <div class="item">真实数据：${pill}</div>

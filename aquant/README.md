@@ -353,6 +353,21 @@ picks = Screener().screen(data, universe=universe, auction=auction, top_n=8)
 
 完整示例见 `examples/load_akshare_data.py`。
 
+### 股票池加载（hs300/zz500/全A 真实成分）
+
+```bash
+aquant universe --universe hs300                 # 检查数量+前10只（应≈300）
+aquant universe --universe zz500                 # ≈500
+aquant universe --universe all                   # 全A（数千只）
+aquant universe --universe hs300 --source akshare# 指定数据源
+aquant screen --strategy predictive_ranking --top 20 --universe hs300
+```
+
+- 指数成分：先 Baostock，失败自动尝试 AkShare；都失败则**报错，不回退到小样本池**。
+- 结果缓存到 `data/cache/universe_<name>.csv`，状态栏显示来源(hs300/zz500/all/watchlist/cache/default)、数量、缓存路径与更新时间。
+- 若指数/全A 股票池数量 < 50，前端与 CLI 显示「股票池数量异常，当前仅 N 只，请检查数据源或股票池配置。」
+- 默认快速池为约 60 只**真实** A 股（各行业代表），仅用于快速演示；真正全市场请选 hs300/zz500/all。
+
 > 注意：AkShare 抓取的是公开数据站点（东方财富/新浪/百度股市通），**建议在中国大陆网络下使用**；
 > 海外/被限流的 IP 可能频繁断连。价格默认前复权（`adjust="qfq"`，可改 `hfq`/`""`）。
 

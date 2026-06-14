@@ -139,6 +139,21 @@ def cmd_screen(args) -> int:
     return 0
 
 
+def cmd_universe(args) -> int:
+    name = getattr(args, "universe", None) or "hs300"
+    src = getattr(args, "source", None)
+    info = service.load_universe(name, source=src)
+    print(f"\n股票池: {info['name']}  来源: {info['source']}  数量: {info['size']}")
+    if info.get("cache_file"):
+        print(f"缓存文件: {info['cache_file']}  更新时间: {info.get('updated_at') or '-'}")
+    if info.get("error"):
+        print(f"错误: {info['error']}")
+    if info["size"] and info["size"] < 50 and name.lower() in ("hs300", "zz500", "sz50", "all"):
+        print(f"⚠️ 股票池数量异常，当前仅 {info['size']} 只，请检查数据源或股票池配置。")
+    print("前 10 只:", ", ".join(info["symbols"][:10]) or "(空)")
+    return 0
+
+
 def cmd_predict(args) -> int:
     if getattr(args, "symbol", None):
         r = service.predict_symbol(args.symbol, horizon=args.horizon, use_sentiment=getattr(args, "use_sentiment", False))
@@ -315,6 +330,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="加入舆情/关注度因子(辅助)")
     sc.add_argument("--save", action="store_true", help="导出结果到 outputs/")
     sc.set_defaults(func=cmd_screen)
+
+    un = sub.add_parser("universe", help="检查股票池数量与前10只", parents=[data])
+    un.set_defaults(func=cmd_universe)
 
     pr = sub.add_parser("predict", help="预测上涨模型(未来3/5/10日)", parents=[data])
     pr.add_argument("--symbol", help="单只股票预测；不指定则看 Top")
