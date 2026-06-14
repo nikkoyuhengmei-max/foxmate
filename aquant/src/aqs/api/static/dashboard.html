@@ -119,7 +119,7 @@ const cls = v => v>=0 ? 'pos':'neg';
 async function api(path, opts){ const r = await fetch(path, opts); return r.json(); }
 
 async function init(){
-  const h = await api('/api/health'); document.getElementById('version').textContent = 'v'+h.version;
+  const h = await api('/api/health'); document.getElementById('version').textContent = 'v'+h.version+' · 数据源:'+(h.source||'-');
   const strat = await api('/api/strategies');
   const sel = document.getElementById('strategy');
   for(const [k,name] of Object.entries(strat)){ const o=document.createElement('option'); o.value=k; o.textContent=name+' ('+k+')'; sel.appendChild(o); }

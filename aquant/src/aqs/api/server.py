@@ -38,7 +38,12 @@ def create_app() -> "FastAPI":
 
     @app.get("/api/health")
     def health() -> Dict[str, Any]:
-        return {"status": "ok", "version": __version__}
+        return {
+            "status": "ok",
+            "version": __version__,
+            "source": service.DATA_CFG["source"],
+            "n_symbols": len(service.DATA_CFG["symbols"]),
+        }
 
     @app.get("/api/strategies")
     def strategies() -> Dict[str, str]:

@@ -7,6 +7,8 @@ both the CLI and the web API so behaviour stays consistent.
 
 from __future__ import annotations
 
+import datetime as _dt
+import os
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -25,11 +27,102 @@ from aqs.trading.trader import PaperTrader
 
 _DATA_CACHE: Dict[str, MarketDataManager] = {}
 
+# 默认蓝筹/各行业代表股池（可被 configure_data / 环境变量覆盖）
+_DEFAULT_UNIVERSE = [
+    "600519.SH", "600036.SH", "601318.SH", "000333.SZ", "300750.SZ", "000001.SZ",
+    "600276.SH", "002594.SZ", "601899.SH", "600900.SH", "000651.SZ", "002415.SZ",
+    "600030.SH", "300059.SZ", "688981.SH", "601012.SH",
+]
+
+
+def _default_dates() -> tuple[str, str]:
+    end = _dt.date.today()
+    start = end - _dt.timedelta(days=365 * 2)
+    return start.isoformat(), end.isoformat()
+
+
+def _env_symbols() -> List[str]:
+    raw = os.getenv("AQUANT_SYMBOLS")
+    return [s.strip() for s in raw.split(",") if s.strip()] if raw else list(_DEFAULT_UNIVERSE)
+
+
+_s, _e = _default_dates()
+DATA_CFG: Dict[str, Any] = {
+    "source": os.getenv("AQUANT_SOURCE", "baostock"),   # baostock | akshare | sample
+    "symbols": _env_symbols(),
+    "start": os.getenv("AQUANT_START", _s),
+    "end": os.getenv("AQUANT_END", _e),
+    "benchmark": os.getenv("AQUANT_BENCHMARK", "000300.SH"),
+    "cache_dir": os.getenv("AQUANT_CACHE_DIR", ".cache"),
+    "refresh": False,
+}
+
+
+def configure_data(
+    source: Optional[str] = None,
+    symbols: Optional[List[str]] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    benchmark: Optional[str] = None,
+    cache_dir: Optional[str] = None,
+    refresh: Optional[bool] = None,
+) -> None:
+    """更新全局数据源配置，并清空已加载的数据缓存。"""
+    if source is not None:
+        DATA_CFG["source"] = source
+    if symbols:
+        DATA_CFG["symbols"] = symbols
+    if start is not None:
+        DATA_CFG["start"] = start
+    if end is not None:
+        DATA_CFG["end"] = end
+    if benchmark is not None:
+        DATA_CFG["benchmark"] = benchmark
+    if cache_dir is not None:
+        DATA_CFG["cache_dir"] = cache_dir
+    if refresh is not None:
+        DATA_CFG["refresh"] = refresh
+    _DATA_CACHE.pop("default", None)
+
 
 def get_data_manager(config: SystemConfig = DEFAULT_CONFIG, refresh: bool = False) -> MarketDataManager:
-    if refresh or "default" not in _DATA_CACHE:
-        _DATA_CACHE["default"] = MarketDataManager.from_sample(config)
-    return _DATA_CACHE["default"]
+    if not refresh and "default" in _DATA_CACHE:
+        return _DATA_CACHE["default"]
+
+    cfg = DATA_CFG
+    src = cfg["source"]
+    mgr: Optional[MarketDataManager] = None
+
+    if src in ("baostock", "akshare"):
+        try:
+            common = dict(
+                symbols=cfg["symbols"], start=cfg["start"], end=cfg["end"],
+                benchmark=cfg["benchmark"], cache_dir=cfg["cache_dir"],
+                refresh=cfg["refresh"], config=config,
+            )
+            if src == "baostock":
+                mgr = MarketDataManager.from_baostock(**common)
+            else:
+                mgr = MarketDataManager.from_akshare(**common)
+            if not mgr.symbols:
+                raise RuntimeError("数据源未返回任何标的")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[data] 数据源 '{src}' 取数失败，回退到示例数据：{exc}")
+            mgr = None
+
+    if mgr is None:
+        mgr = MarketDataManager.from_sample(config)
+
+    _DATA_CACHE["default"] = mgr
+    return mgr
+
+
+def active_source() -> str:
+    """返回当前实际生效的数据源（区分配置值与回退结果）。"""
+    mgr = _DATA_CACHE.get("default")
+    if mgr is None:
+        return DATA_CFG["source"]
+    return DATA_CFG["source"]
 
 
 def list_strategies() -> Dict[str, str]:

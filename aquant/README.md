@@ -57,6 +57,21 @@ aquant serve                            # 启动本地 Web 仪表盘 (http://127
 
 > 未安装也可直接运行：`PYTHONPATH=src python -m aqs.cli backtest`。
 
+### 选择数据源（默认 Baostock 真实数据 + 本地缓存）
+
+所有命令默认使用 **Baostock 真实行情**并写入本地缓存 `.cache/`（取数失败自动回退内置示例数据）。
+可用统一参数切换数据源/股票池/区间：
+
+```bash
+aquant screen --top 8                                   # 默认 baostock 真实数据
+aquant screen --source sample                           # 用内置示例数据（离线、最快）
+aquant screen --symbols 600519.SH,000333.SZ --start 2023-01-01 --end 2023-12-31
+aquant backtest --source baostock --strategy multi_factor
+aquant serve --source baostock                          # 仪表盘也用真实数据
+```
+
+也可用环境变量配置：`AQUANT_SOURCE`、`AQUANT_SYMBOLS`、`AQUANT_START`、`AQUANT_END`、`AQUANT_CACHE_DIR`。
+
 ### 仪表盘
 `aquant serve` 后浏览器打开 http://127.0.0.1:8000 ，可在线运行回测、查看净值/回撤曲线、月度收益热力图、
 风控与合规面板、最近成交、系统日志，以及"AI 走势分析/预测"。所有计算均在本地完成，数据不出本机。

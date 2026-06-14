@@ -117,6 +117,16 @@ def cmd_serve(args) -> int:
     except Exception:
         print("需要安装 web 依赖: pip install -e '.[web]'", file=sys.stderr)
         return 1
+    import os
+    # 通过环境变量把数据源配置传给（可能 reload 的）服务进程
+    cfg = service.DATA_CFG
+    os.environ["AQUANT_SOURCE"] = cfg["source"]
+    os.environ["AQUANT_SYMBOLS"] = ",".join(cfg["symbols"])
+    os.environ["AQUANT_START"] = cfg["start"]
+    os.environ["AQUANT_END"] = cfg["end"]
+    os.environ["AQUANT_BENCHMARK"] = cfg["benchmark"]
+    os.environ["AQUANT_CACHE_DIR"] = cfg["cache_dir"]
+    print(f"数据源: {cfg['source']}  股票池: {len(cfg['symbols'])} 只  区间: {cfg['start']}~{cfg['end']}")
     print(f"启动本地仪表盘: http://{args.host}:{args.port}  (Ctrl+C 退出)")
     uvicorn.run("aqs.api.server:app", host=args.host, port=args.port, reload=args.reload)
     return 0
@@ -125,35 +135,45 @@ def cmd_serve(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="aquant", description="A股量化交易系统 (AQuant)")
     p.add_argument("--version", action="version", version=f"AQuant {__version__}")
+    # 公共数据源选项（各子命令共享）
+    data = argparse.ArgumentParser(add_help=False)
+    data.add_argument("--source", choices=["baostock", "akshare", "sample"],
+                      help="数据源 (默认 baostock，取数失败自动回退 sample)")
+    data.add_argument("--symbols", help="逗号分隔股票池, 如 600519.SH,000333.SZ")
+    data.add_argument("--start", help="数据起始日期 YYYY-MM-DD")
+    data.add_argument("--end", help="数据结束日期 YYYY-MM-DD")
+    data.add_argument("--benchmark", help="基准指数, 默认 000300.SH")
+    data.add_argument("--cache-dir", dest="cache_dir", help="本地缓存目录, 默认 .cache")
+    data.add_argument("--refresh", action="store_true", help="强制重新取数(忽略缓存)")
+
     sub = p.add_subparsers(dest="command", required=True)
 
     sub.add_parser("strategies", help="列出策略模板").set_defaults(func=cmd_strategies)
-    sub.add_parser("quality", help="数据质量报告").set_defaults(func=cmd_quality)
+    sub.add_parser("quality", help="数据质量报告", parents=[data]).set_defaults(func=cmd_quality)
 
-    bt = sub.add_parser("backtest", help="运行回测")
+    bt = sub.add_parser("backtest", help="运行回测", parents=[data])
     bt.add_argument("--strategy", default="multi_factor")
     bt.add_argument("--params", help="JSON 参数, 如 '{\"top_n\":5}'")
-    bt.add_argument("--start"); bt.add_argument("--end")
     bt.add_argument("--fill", default="next_open", choices=["next_open", "close"])
     bt.add_argument("--json", action="store_true")
     bt.set_defaults(func=cmd_backtest)
 
-    pa = sub.add_parser("paper", help="模拟交易")
+    pa = sub.add_parser("paper", help="模拟交易", parents=[data])
     pa.add_argument("--strategy", default="double_ma")
-    pa.add_argument("--params"); pa.add_argument("--start"); pa.add_argument("--end")
+    pa.add_argument("--params")
     pa.set_defaults(func=cmd_paper)
 
-    sc = sub.add_parser("screen", help="快速筛选 Top N 候选股")
+    sc = sub.add_parser("screen", help="快速筛选 Top N 候选股", parents=[data])
     sc.add_argument("--top", type=int, default=8)
     sc.add_argument("--asof", help="筛选时点 (YYYY-MM-DD)，默认最新")
     sc.set_defaults(func=cmd_screen)
 
-    fc = sub.add_parser("forecast", help="走势分析与预测")
+    fc = sub.add_parser("forecast", help="走势分析与预测", parents=[data])
     fc.add_argument("--symbol", required=True)
     fc.add_argument("--horizon", type=int, default=5)
     fc.set_defaults(func=cmd_forecast)
 
-    sv = sub.add_parser("serve", help="启动本地 Web 仪表盘")
+    sv = sub.add_parser("serve", help="启动本地 Web 仪表盘", parents=[data])
     sv.add_argument("--host", default="127.0.0.1")
     sv.add_argument("--port", type=int, default=8000)
     sv.add_argument("--reload", action="store_true")
@@ -162,9 +182,25 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _apply_data_config(args) -> None:
+    """把命令行数据源参数应用到 service 全局配置。"""
+    symbols = [s.strip() for s in args.symbols.split(",")] if getattr(args, "symbols", None) else None
+    service.configure_data(
+        source=getattr(args, "source", None),
+        symbols=symbols,
+        start=getattr(args, "start", None),
+        end=getattr(args, "end", None),
+        benchmark=getattr(args, "benchmark", None),
+        cache_dir=getattr(args, "cache_dir", None),
+        refresh=getattr(args, "refresh", None),
+    )
+
+
 def main(argv: Optional[list] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if hasattr(args, "source"):  # 命令带数据源选项
+        _apply_data_config(args)
     return args.func(args)
 
 
