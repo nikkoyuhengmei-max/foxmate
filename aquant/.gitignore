@@ -12,4 +12,7 @@ venv/
 *.sqlite
 *.duckdb
 data_store/
+.cache/
+.cache_demo/
+*.pkl
 .DS_Store

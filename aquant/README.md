@@ -133,7 +133,27 @@ picks = Screener().screen(data, universe=universe, auction=auction, top_n=8)
 > 因子权重在 `ScreenConfig.weights` 可调。选股结果仅为量化参考，不构成投资建议。
 > 注：日线只能到上一收盘；要"过去 24 小时/分钟级"需接 iFinD 分钟(wsi)/实时数据，接上后即可扩展周期。
 
-## 接入真实数据：AkShare（免费、免注册，推荐个人用户）
+## 接入真实数据：Baostock（免费、免注册、**稳定不限流**，首选）
+
+`pip install baostock` 后即可用，自有数据服务器、基本不限流；一次 K 线查询即返回
+**OHLCV + 复权 + PE(TTM)/PB + 是否 ST + 换手率**。配合**本地缓存**：取一次写入磁盘，之后秒读、不再联网。
+
+```python
+from aqs.data.market_data import MarketDataManager
+from aqs.research.screener import Screener
+
+data = MarketDataManager.from_baostock(
+    ["600519.SH", "600036.SH", "300750.SZ", "000333.SZ"],
+    start="2022-01-01", end="2023-12-31",
+    cache_dir=".cache",          # 取一次后走本地缓存，避免反复联网/限流
+)
+print(Screener().screen(data, top_n=8))
+```
+
+> 无实时/集合竞价（要实时用 AkShare 或券商 miniQMT）。`refresh=True` 可强制重新取数。
+> 完整示例 `examples/load_baostock_data.py`。
+
+## 接入真实数据：AkShare（免费、免注册，含实时/竞价）
 
 如果没有 Wind / iFinD 的数据 API 账号，用 **AkShare** 即可：开源免费、**无需账号**，
 `pip install akshare` 后联网即可取 A 股日线、实时快照、集合竞价、PE/PB、指数等。

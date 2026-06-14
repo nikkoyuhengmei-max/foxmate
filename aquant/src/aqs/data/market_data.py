@@ -108,17 +108,62 @@ class MarketDataManager:
         benchmark: str = "000300.SH",
         adjust: str = "qfq",
         with_fundamentals: bool = True,
+        cache_dir: Optional[str] = None,
+        refresh: bool = False,
         config: SystemConfig = DEFAULT_CONFIG,
     ) -> "MarketDataManager":
         """Build a manager from free AkShare data (no account needed).
 
-        Requires ``pip install akshare`` and internet access. See
-        :mod:`aqs.data.sources.akshare_source`.
+        Requires ``pip install akshare`` and internet access. Set ``cache_dir`` to
+        fetch once and reuse from disk (avoids repeated rate-limiting).
         """
         from aqs.data.sources.akshare_source import AkShareDataSource
+        from aqs.data.cache import cache_key, cached_build
 
-        src = AkShareDataSource()
-        ds = src.build_dataset(list(symbols), start, end, benchmark=benchmark, adjust=adjust, with_fundamentals=with_fundamentals)
+        def _build():
+            return AkShareDataSource().build_dataset(
+                list(symbols), start, end, benchmark=benchmark, adjust=adjust, with_fundamentals=with_fundamentals
+            )
+
+        key = cache_key("akshare", symbols, start, end, benchmark, adjust)
+        ds = cached_build(_build, cache_dir, key, refresh)
+        mgr = cls(config)
+        mgr.load_dataset(ds)
+        return mgr
+
+    @classmethod
+    def from_baostock(
+        cls,
+        symbols,
+        start: str,
+        end: str,
+        benchmark: str = "000300.SH",
+        adjust: str = "qfq",
+        with_fundamentals: bool = True,
+        cache_dir: Optional[str] = None,
+        refresh: bool = False,
+        config: SystemConfig = DEFAULT_CONFIG,
+    ) -> "MarketDataManager":
+        """Build a manager from free Baostock data (no account, stable server).
+
+        Requires ``pip install baostock``. One K-line query returns OHLCV +
+        adjustment + PE(TTM)/PB + ST flag + turnover. Set ``cache_dir`` to reuse
+        from disk. See :mod:`aqs.data.sources.baostock_source`.
+        """
+        from aqs.data.sources.baostock_source import BaostockDataSource
+        from aqs.data.cache import cache_key, cached_build
+
+        def _build():
+            src = BaostockDataSource()
+            try:
+                return src.build_dataset(
+                    list(symbols), start, end, benchmark=benchmark, adjust=adjust, with_fundamentals=with_fundamentals
+                )
+            finally:
+                src.logout()
+
+        key = cache_key("baostock", symbols, start, end, benchmark, adjust)
+        ds = cached_build(_build, cache_dir, key, refresh)
         mgr = cls(config)
         mgr.load_dataset(ds)
         return mgr
