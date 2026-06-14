@@ -103,12 +103,19 @@ def cmd_paper(args) -> int:
 
 
 def cmd_screen(args) -> int:
+    strat = getattr(args, "strategy", "short_strength")
+    if strat not in service.list_strategies():
+        print(f"当前策略未实现: {strat}。可用: {', '.join(service.list_strategies())}", file=sys.stderr)
+        return 1
+    import time as _t
+    t0 = _t.time()
     res = service.screen_stocks(
-        strategy=getattr(args, "strategy", "short_strength"),
+        strategy=strat,
         top_n=args.top, asof=args.asof, min_amount=getattr(args, "min_amount", 0.0),
         exclude_st=getattr(args, "exclude_st", True),
         exclude_slow_blue_chip=getattr(args, "exclude_slow_blue_chip", True),
         max_market_cap=getattr(args, "max_market_cap", 3000e8),
+        use_cache=getattr(args, "use_cache", True),
         save=getattr(args, "save", False),
     )
     flag = "真实数据" if res.get("is_real_data") else "示例数据(回退)"
@@ -122,8 +129,11 @@ def cmd_screen(args) -> int:
               f"{(p.get('ret_10d') or 0)*100:>5.1f}%{(p.get('amount_ratio') or 0):>5.1f}x{p.get('rsi',0):>5.0f}"
               f"{p.get('score',0):>7.2f}  {str(p.get('signal','')):<8}{bo}{str(p.get('reason',''))}")
     print("-" * 104)
+    if not res["picks"]:
+        print("没有筛选出符合条件的股票，请降低筛选条件或扩大股票池。")
     if res.get("saved"):
         print(f"已导出: {res['saved']}")
+    print(f"选股完成，用时 {_t.time()-t0:.1f} 秒")
     print(res["disclaimer"])
     return 0
 
@@ -235,6 +245,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="超大市值阈值(元), 与低涨幅共同判定慢速蓝筹, 默认3000亿")
     sc.add_argument("--keep-blue-chip", dest="exclude_slow_blue_chip", action="store_false",
                     default=True, help="不排除超大市值慢速蓝筹")
+    sc.add_argument("--use-cache", dest="use_cache", action="store_true", default=True, help="使用本地缓存(默认开)")
+    sc.add_argument("--no-cache", dest="use_cache", action="store_false", help="忽略缓存重新取数")
     sc.add_argument("--save", action="store_true", help="导出结果到 outputs/")
     sc.set_defaults(func=cmd_screen)
 

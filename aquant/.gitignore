@@ -18,5 +18,6 @@ outputs/
 records/
 *.pkl
 data/stocks.csv
+data/cache/
 data/watchlist.csv
 .DS_Store

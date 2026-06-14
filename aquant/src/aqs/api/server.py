@@ -135,10 +135,13 @@ def create_app() -> "FastAPI":
     @app.get("/api/screen")
     def screen(strategy: str = "short_strength", top_n: int = 20, asof: Optional[str] = None,
                universe: Optional[str] = None, min_amount: float = 0.0,
-               exclude_slow_blue_chip: bool = True, max_market_cap: float = 3000e8) -> Dict[str, Any]:
+               exclude_slow_blue_chip: bool = True, max_market_cap: float = 3000e8,
+               use_cache: bool = True, timeout: int = 30) -> Dict[str, Any]:
+        if strategy not in service.list_strategies():
+            return {"error": "当前策略未实现", "strategy": strategy, "picks": []}
         return service.screen_stocks(strategy=strategy, top_n=top_n, asof=asof, universe=universe,
                                      min_amount=min_amount, exclude_slow_blue_chip=exclude_slow_blue_chip,
-                                     max_market_cap=max_market_cap)
+                                     max_market_cap=max_market_cap, use_cache=use_cache)
 
     return app
 

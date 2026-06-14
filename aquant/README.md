@@ -57,6 +57,12 @@ aquant serve                            # 启动本地 Web 仪表盘 (http://127
 
 > 未安装也可直接运行：`PYTHONPATH=src python -m aqs.cli backtest`。
 
+### 性能与缓存
+
+- 全市场股票列表缓存到 `data/cache/stock_universe.csv`，行情数据集缓存到 `data/cache/`（同一天/同一股票池不重复请求）。
+- `screen` 支持 `--use-cache/--no-cache`；前端所有耗时操作均有 loading 分阶段提示、**30 秒超时**、按钮禁用与用时显示，失败会显示明确原因。
+- 股票池建议：默认池(快) / 沪深300 / 中证500 / 自选股 / 全A股（= 沪深300∪中证500 的较广池，首次较慢、之后走缓存）。
+
 ### 选择数据源（默认 Baostock 真实数据 + 本地缓存）
 
 所有命令默认使用 **Baostock 真实行情**并写入本地缓存 `.cache/`（取数失败自动回退内置示例数据）。

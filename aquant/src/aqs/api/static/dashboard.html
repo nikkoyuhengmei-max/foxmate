@@ -84,14 +84,16 @@
       <select id="advStrategy" class="hidden" onchange="useAdv()"></select>
       <label>股票池
         <select id="universe" onchange="runScreen()">
-          <option value="">默认/全A池</option>
+          <option value="">默认池(快)</option>
           <option value="hs300">沪深300</option>
+          <option value="zz500">中证500</option>
           <option value="watchlist">自选股</option>
+          <option value="all">全A股(较慢)</option>
         </select>
       </label>
       <label>数量 <input id="topN" type="number" value="20" min="5" max="100" style="width:70px"></label>
       <label class="sub"><input type="checkbox" id="exclBlue" checked onchange="runScreen()"> 排除超大市值慢速蓝筹</label>
-      <button onclick="runScreen()">运行选股</button>
+      <button id="runScreenBtn" onclick="runScreen()">运行选股</button>
       <span id="msg" class="sub"></span>
     </div>
     <div class="sub" id="stratHint" style="margin-top:8px"></div>
@@ -100,7 +102,7 @@
   <!-- C. 今日策略筛选结果 -->
   <div class="card">
     <h3 id="screenTitle">今日短线强势股 Top 20 <span class="tag" id="screenMeta"></span></h3>
-    <div class="scroll" id="screen"><div class="empty">选择策略后点击「运行选股」</div></div>
+    <div class="scroll" id="screen"><div class="empty">请选择策略并点击运行选股。</div></div>
   </div>
 
   <!-- E. 策略历史表现 -->
@@ -140,11 +142,17 @@
       </div>
       <div class="controls" style="margin-bottom:10px">
         <select id="fcQuick" onchange="quickSelect()" style="flex:1;min-width:160px"><option value="">常用/最近筛选/自选股…</option></select>
-        <button onclick="runForecast()">分析并预测</button>
+        <button id="fcBtn" onclick="runForecast()">分析并预测</button>
         <button class="secondary" onclick="addWatch()">加入自选</button>
       </div>
       <div id="forecast" class="sub">输入代码或名称后点击「分析并预测」。预测仅供研究参考，不构成投资建议。</div>
     </div>
+  </div>
+
+  <!-- 自选股 -->
+  <div class="card">
+    <h3>自选股 <span class="tag">data/watchlist.csv</span></h3>
+    <div class="scroll" id="watchlistBox"><div class="empty">暂无自选股，可在上方搜索后「加入自选」</div></div>
   </div>
 
   <!-- F. 模拟交易记录 -->
@@ -167,20 +175,42 @@ const fmtAmt=v=>v>=1e8?(v/1e8).toFixed(1)+'亿':v>=1e4?(v/1e4).toFixed(0)+'万':
 const logs=[];
 function log(m){const t=new Date().toLocaleString('zh-CN');logs.unshift(`[${t}] ${m}`);
   document.getElementById('logs').innerHTML=logs.slice(0,80).map(l=>`<div class="logline">${l}</div>`).join('');}
-async function api(p,o){const r=await fetch(p,o);return r.json();}
+// 带超时的 fetch（默认 30s）
+async function api(p,o,ms){
+  ms=ms||30000;
+  const ctl=new AbortController(); const tid=setTimeout(()=>ctl.abort(),ms);
+  try{ const r=await fetch(p,Object.assign({signal:ctl.signal},o||{}));
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    return await r.json();
+  } finally{ clearTimeout(tid); }
+}
+function busy(id,on,txt){const b=document.getElementById(id);if(!b)return;b.disabled=on;
+  if(on){b.dataset.t=b.dataset.t||b.textContent;if(txt)b.textContent=txt;}else if(b.dataset.t){b.textContent=b.dataset.t;}}
 
-let currentStrategy='short_momentum', catalog=null, lastScreenPicks=[], watchItems=[], searchItems=[];
+const FALLBACK_CORE=[
+  {key:'short_strength',name:'短线强势股',horizon:'1-10 天短线'},
+  {key:'trend_quality',name:'稳健趋势股',horizon:'1-8 周'},
+  {key:'quality_value',name:'质量价值股',horizon:'1-6 个月'},
+];
+let currentStrategy='short_strength', catalog=null, lastScreenPicks=[], watchItems=[], searchItems=[];
+
+function fillStrategySelect(){
+  const core=document.getElementById('strategy'); core.innerHTML='';
+  const list=(catalog&&catalog.core&&catalog.core.length)?catalog.core:FALLBACK_CORE;
+  list.forEach(e=>{const o=document.createElement('option');o.value=e.key;o.textContent=e.name;core.appendChild(o);});
+  const adv=document.getElementById('advStrategy'); adv.innerHTML='';
+  ((catalog&&catalog.advanced)||[]).forEach(e=>{const o=document.createElement('option');o.value=e.key;o.textContent=e.name+' ('+e.key+')';adv.appendChild(o);});
+  core.value=(catalog&&catalog.default)||'short_strength'; currentStrategy=core.value; showStratDesc();
+}
 
 async function init(){
-  catalog=await api('/api/strategies/catalog');
-  const core=document.getElementById('strategy');
-  catalog.core.forEach(e=>{const o=document.createElement('option');o.value=e.key;o.textContent=e.name;core.appendChild(o);});
-  const adv=document.getElementById('advStrategy');
-  catalog.advanced.forEach(e=>{const o=document.createElement('option');o.value=e.key;o.textContent=e.name+' ('+e.key+')';adv.appendChild(o);});
-  core.value=catalog.default||'short_momentum'; currentStrategy=core.value;
-  updateHint();
-  await loadStatus(); await loadWatchlist(); await loadTrades(); await loadTimingMode();
-  log('工作台已加载，默认策略：'+core.options[core.selectedIndex].text);
+  try{ catalog=await api('/api/strategies/catalog'); }
+  catch(e){ catalog={core:FALLBACK_CORE,advanced:[],default:'short_strength'}; }
+  fillStrategySelect();
+  for(const step of [loadStatus,loadWatchlist,loadTrades,loadTimingMode]){
+    try{ await step(); }catch(e){ log((step.name||'step')+' 失败: '+e); }
+  }
+  log('工作台已加载，默认策略：短线强势股');
   runScreen();
 }
 
@@ -216,14 +246,20 @@ async function runTimingMode(mode,name){
     h+='</tr>';});
   tr.innerHTML=(res.title?('<div class="sub">'+res.title+'</div>'):'')+h+'</tbody></table>';
 }
-function updateHint(){
-  const e=[...catalog.core,...catalog.advanced].find(x=>x.key===currentStrategy);
-  document.getElementById('stratHint').textContent = e&&e.horizon ? ('适用周期：'+e.horizon) : '';
+function stratEntry(key){return((catalog?[...(catalog.core||[]),...(catalog.advanced||[])]:[]).concat(FALLBACK_CORE)).find(x=>x.key===key);}
+function showStratDesc(){
+  const e=stratEntry(currentStrategy)||{};
+  let h=`<b>${e.name||currentStrategy}</b>`;
+  if(e.horizon)h+=` · 适合周期：${e.horizon}`;
+  if(e.use)h+=`<br>用途：${e.use}`;
+  if(e.factors)h+=`<br>主要因子：${e.factors}`;
+  if(e.risk)h+=`<br><span style="color:var(--yellow)">风险提示：${e.risk}</span>`;
+  document.getElementById('stratHint').innerHTML=h;
 }
 function onStrategyChange(){ currentStrategy=document.getElementById('strategy').value;
-  document.getElementById('advToggle').checked=false; document.getElementById('advStrategy').classList.add('hidden'); updateHint(); }
+  document.getElementById('advToggle').checked=false; document.getElementById('advStrategy').classList.add('hidden'); showStratDesc(); }
 function toggleAdv(){ document.getElementById('advStrategy').classList.toggle('hidden',!document.getElementById('advToggle').checked); }
-function useAdv(){ currentStrategy=document.getElementById('advStrategy').value; updateHint(); }
+function useAdv(){ currentStrategy=document.getElementById('advStrategy').value; showStratDesc(); }
 
 async function loadStatus(){
   const s=await api('/api/status'); const real=s.is_real_data;
@@ -244,23 +280,42 @@ async function loadStatus(){
   b.className=real?'':'demo-banner';
 }
 
-function stratName(){const e=(catalog?[...catalog.core,...catalog.advanced]:[]).find(x=>x.key===currentStrategy);return e?e.name:currentStrategy;}
+function stratName(){const e=stratEntry(currentStrategy);return e?e.name:currentStrategy;}
+let screenRunning=false;
 async function runScreen(){
+  if(screenRunning)return; screenRunning=true;
   const top=document.getElementById('topN').value||20;
   const uni=document.getElementById('universe').value;
   const exb=document.getElementById('exclBlue').checked;
-  document.getElementById('screen').innerHTML='<div class="empty">选股中…'+(uni?'（加载股票池，首次较慢）':'')+'</div>';
+  if(!currentStrategy){document.getElementById('screen').innerHTML='<div class="neg">策略为空，请选择策略</div>';screenRunning=false;return;}
   document.getElementById('screenTitle').firstChild.nodeValue=`今日${stratName()} Top ${top} `;
+  document.querySelectorAll('button').forEach(b=>{}); busy('runScreenBtn',true,'运行中…');
+  const t0=performance.now();
+  const stages=['正在获取股票池…','正在拉取行情数据…','正在计算短线因子…','正在排序 Top N…','正在生成结果…'];
+  let si=0; const sc=document.getElementById('screen');
+  sc.innerHTML='<div class="empty">正在运行'+stratName()+'策略…'+(uni?'（加载股票池，首次较慢）':'')+'</div>';
+  const timer=setInterval(()=>{si=Math.min(si+1,stages.length-1);sc.innerHTML='<div class="empty">'+stages[si]+'</div>';},1500);
   log('运行选股：'+currentStrategy+' Top'+top+(uni?(' 股票池='+uni):'')+(exb?' 排除慢蓝筹':''));
-  const res=await api(`/api/screen?strategy=${currentStrategy}&top_n=${top}&universe=${encodeURIComponent(uni)}&exclude_slow_blue_chip=${exb}`);
-  renderScreen(res); await loadStatus();
-  runBacktest();   // 选股后自动加载该策略历史表现
+  try{
+    const res=await api(`/api/screen?strategy=${currentStrategy}&top_n=${top}&universe=${encodeURIComponent(uni)}&exclude_slow_blue_chip=${exb}`,null,30000);
+    clearInterval(timer);
+    if(res.error){sc.innerHTML='<div class="neg">'+res.error+'</div>';return;}
+    renderScreen(res);
+    const dt=((performance.now()-t0)/1000).toFixed(1);
+    document.getElementById('screenMeta').textContent+= ` · 用时 ${dt}s`;
+    log('选股完成，用时 '+dt+' 秒');
+    await loadStatus(); runBacktest();
+  }catch(e){
+    clearInterval(timer);
+    const msg=(e.name==='AbortError')?'运行超时，请减少股票池范围或检查数据源。':('运行失败：'+e.message+'（可能数据源连接失败/登录失败）');
+    sc.innerHTML='<div class="neg">'+msg+'</div>'; log(msg);
+  }finally{ busy('runScreenBtn',false); screenRunning=false; }
 }
 function sigClass(s){return (s==='强势观察'||s==='买入候选')?'sig-buy':(s==='观察'||s==='回踩观察')?'sig-obs':(s==='过热谨慎')?'neg':'sig-ex';}
 function renderScreen(res){
   const picks=res.picks||[]; lastScreenPicks=picks; rebuildQuick();
   document.getElementById('screenMeta').textContent=`${res.strategy_name||''} · asof ${res.asof||'-'} · ${res.is_real_data?'真实数据':'示例数据'}`;
-  if(!picks.length){document.getElementById('screen').innerHTML='<div class="empty">无符合条件的强势股（可放宽条件或更换股票池）</div>';return;}
+  if(!picks.length){document.getElementById('screen').innerHTML='<div class="empty">没有筛选出符合条件的股票，请降低筛选条件或扩大股票池。</div>';return;}
   let h='<table><thead><tr><th>排名</th><th class="lft">名称</th><th class="lft">代码</th><th class="lft">行业</th><th>最新价</th><th>3日</th><th>5日</th><th>10日</th><th>量能放大</th><th>RSI</th><th>突破</th><th>综合评分</th><th class="lft">信号</th><th class="lft">原因</th><th class="lft">风险</th><th class="lft">操作</th></tr></thead><tbody>';
   picks.forEach(p=>{ const bo=p.breakout_20d?'<span class="pos">▲新高</span>':'—';
     h+=`<tr>
@@ -356,7 +411,17 @@ function rebuildQuick(){
   grp('最近筛选结果',lastScreenPicks.map(p=>({symbol:p.symbol,name:p.name})));
   grp('自选股',watchItems); grp('搜索结果',searchItems);
 }
-async function loadWatchlist(){watchItems=await api('/api/watchlist');rebuildQuick();}
+async function loadWatchlist(){watchItems=await api('/api/watchlist');rebuildQuick();renderWatchlist();}
+function renderWatchlist(){
+  const el=document.getElementById('watchlistBox');
+  if(!watchItems||!watchItems.length){el.innerHTML='<div class="empty">暂无自选股，可在上方搜索后「加入自选」</div>';return;}
+  let h='<table><thead><tr><th class="lft">代码</th><th class="lft">名称</th><th class="lft">行业</th><th class="lft">操作</th></tr></thead><tbody>';
+  watchItems.forEach(w=>{h+=`<tr><td class="lft">${w.symbol}</td><td class="lft">${w.name||''}</td><td class="lft">${w.industry||'未分类'}</td>
+    <td class="lft row-actions"><button class="mini secondary" onclick="forecastSym('${w.symbol}')">分析预测</button>
+    <button class="mini secondary" onclick="delWatch('${w.symbol}')">删除</button></td></tr>`;});
+  el.innerHTML=h+'</tbody></table>';
+}
+async function delWatch(sym){await api('/api/watchlist?symbol='+encodeURIComponent(sym),{method:'DELETE'});log('移除自选 '+sym);loadWatchlist();}
 let st=null;
 function onSearchInput(){clearTimeout(st);st=setTimeout(searchStocks,250);}
 async function searchStocks(){const q=document.getElementById('fcInput').value.trim();if(!q)return;
@@ -366,11 +431,26 @@ function quickSelect(){const v=document.getElementById('fcQuick').value;if(v)doc
 async function addWatch(){const q=document.getElementById('fcInput').value.trim();if(!q)return;
   const r=await api('/api/watchlist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:q})});log('加入自选 '+q+'：'+(r.message||''));loadWatchlist();}
 
+let fcRunning=false;
 async function runForecast(){
+  if(fcRunning)return;
   const sym=document.getElementById('fcInput').value.trim()||document.getElementById('fcQuick').value;
   if(!sym){document.getElementById('forecast').innerHTML='<span class="neg">请输入股票代码或名称</span>';return;}
-  document.getElementById('forecast').innerHTML='<span class="sub">分析中…</span>';log('预测：'+sym);
-  renderForecast(await api('/api/forecast?symbol='+encodeURIComponent(sym)));
+  fcRunning=true; busy('fcBtn',true,'分析中…');
+  const el=document.getElementById('forecast'); const t0=performance.now();
+  const stages=['正在解析股票…','正在拉取行情数据…','正在计算特征…','正在训练/预测…'];
+  let si=0; el.innerHTML='<span class="sub">'+stages[0]+'</span>';
+  const timer=setInterval(()=>{si=Math.min(si+1,stages.length-1);el.innerHTML='<span class="sub">'+stages[si]+'</span>';},1500);
+  log('预测：'+sym);
+  try{
+    const r=await api('/api/forecast?symbol='+encodeURIComponent(sym),null,30000);
+    clearInterval(timer); renderForecast(r);
+    log('预测完成，用时 '+((performance.now()-t0)/1000).toFixed(1)+' 秒');
+  }catch(e){
+    clearInterval(timer);
+    const msg=(e.name==='AbortError')?'分析超时，请检查数据源或更换股票。':('分析失败：'+e.message);
+    el.innerHTML='<div class="neg">'+msg+'</div>'; log(msg);
+  }finally{ busy('fcBtn',false); fcRunning=false; }
 }
 function renderForecast(r){
   const el=document.getElementById('forecast');

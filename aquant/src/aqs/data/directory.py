@@ -14,7 +14,7 @@ import re
 from datetime import date, timedelta
 from typing import Dict, List, Optional
 
-_STOCKS_CSV = os.path.join("data", "stocks.csv")
+_STOCKS_CSV = os.path.join("data", "cache", "stock_universe.csv")
 _WATCHLIST_CSV = os.path.join("data", "watchlist.csv")
 
 _DIR_CACHE: Optional[List[dict]] = None
@@ -78,7 +78,7 @@ def _build_from_akshare() -> List[dict]:
             continue
         sym = f"{code6}.{_infer_exchange(code6)}"
         rows.append({"symbol": sym, "name": str(r.get("name", "") or ""),
-                     "exchange": sym.split(".")[-1], "industry": industry_of(sym)})
+                     "exchange": sym.split(".")[-1], "industry": industry_of(sym), "source": "akshare"})
     return rows
 
 
@@ -103,7 +103,7 @@ def _build_from_baostock() -> List[dict]:
             if sym.endswith(".SZ") and code6.startswith(("399",)):
                 continue
             rows.append({"symbol": sym, "name": str(r.get("code_name", "") or ""),
-                         "exchange": sym.split(".")[-1], "industry": industry_of(sym)})
+                         "exchange": sym.split(".")[-1], "industry": industry_of(sym), "source": "baostock"})
         return rows
     finally:
         bs.logout()
@@ -120,9 +120,9 @@ def build_directory(save: bool = True) -> List[dict]:
         except Exception as exc:  # noqa: BLE001
             print(f"[directory] {builder.__name__} 失败：{exc}")
     if save and rows:
-        os.makedirs("data", exist_ok=True)
+        os.makedirs(os.path.dirname(_STOCKS_CSV) or ".", exist_ok=True)
         with open(_STOCKS_CSV, "w", encoding="utf-8", newline="") as fh:
-            w = csv.DictWriter(fh, fieldnames=["symbol", "name", "exchange", "industry"])
+            w = csv.DictWriter(fh, fieldnames=["symbol", "name", "exchange", "industry", "source"])
             w.writeheader()
             w.writerows(rows)
     return rows
@@ -181,12 +181,13 @@ def _fallback_directory() -> List[dict]:
         for sym in mgr.symbols:
             inst = mgr.instrument(sym)
             out[sym] = {"symbol": sym, "name": inst.name if inst else "",
-                        "exchange": sym.split(".")[-1], "industry": inst.industry if inst else "未分类"}
+                        "exchange": sym.split(".")[-1], "industry": inst.industry if inst else "未分类",
+                        "source": "loaded"}
     except Exception:
         pass
     for sym in load_industry_map():
         out.setdefault(sym, {"symbol": sym, "name": "", "exchange": sym.split(".")[-1],
-                             "industry": industry_of(sym)})
+                             "industry": industry_of(sym), "source": "industry_map"})
     return list(out.values())
 
 
@@ -236,11 +237,17 @@ def name_of(symbol: str) -> str:
 
 # -------------------------------------------------------------- 自选股
 def watchlist() -> List[dict]:
+    from aqs.data.industry import industry_of
+
     if not os.path.exists(_WATCHLIST_CSV):
         return []
     try:
         with open(_WATCHLIST_CSV, "r", encoding="utf-8") as fh:
-            return list(csv.DictReader(fh))
+            rows = list(csv.DictReader(fh))
+        for r in rows:
+            if not r.get("industry"):
+                r["industry"] = industry_of(r.get("symbol", ""))
+        return rows
     except Exception:
         return []
 

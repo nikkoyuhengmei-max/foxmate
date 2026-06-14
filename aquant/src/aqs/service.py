@@ -53,7 +53,7 @@ DATA_CFG: Dict[str, Any] = {
     "start": os.getenv("AQUANT_START", _s),
     "end": os.getenv("AQUANT_END", _e),
     "benchmark": os.getenv("AQUANT_BENCHMARK", "000300.SH"),
-    "cache_dir": os.getenv("AQUANT_CACHE_DIR", ".cache"),
+    "cache_dir": os.getenv("AQUANT_CACHE_DIR", os.path.join("data", "cache")),
     "refresh": False,
 }
 
@@ -93,10 +93,10 @@ _UNIVERSE_CACHE: Dict[str, List[str]] = {}
 
 
 def resolve_universe(universe) -> List[str]:
-    """把 universe（列表 / 'hs300' / 'zz500' / 'sz50' / 'watchlist' / 'custom'）解析为代码列表。"""
+    """把 universe（列表 / 'hs300' / 'zz500' / 'sz50' / 'all' / 'watchlist' / 'custom'）解析为代码列表。"""
     if isinstance(universe, (list, tuple)):
         return list(universe)
-    if not universe or universe in ("custom", "default", "all"):
+    if not universe or universe in ("custom", "default"):
         return list(DATA_CFG["symbols"])
     name = str(universe).lower()
     if name == "watchlist":
@@ -104,6 +104,10 @@ def resolve_universe(universe) -> List[str]:
 
         syms = [r["symbol"] for r in directory.watchlist()]
         return syms or list(DATA_CFG["symbols"])
+    if name in ("all", "broad"):
+        # 真·全A股(5000+)逐只取数过重；用 沪深300 ∪ 中证500 作为可行的"较广"市场池
+        merged = list(dict.fromkeys(resolve_universe("hs300") + resolve_universe("zz500")))
+        return merged or list(DATA_CFG["symbols"])
     if name in ("hs300", "zz500", "sz50"):
         if name in _UNIVERSE_CACHE:
             return _UNIVERSE_CACHE[name]
@@ -119,7 +123,7 @@ def resolve_universe(universe) -> List[str]:
     return list(DATA_CFG["symbols"])
 
 
-def _manager_for_universe(syms: List[str], config: SystemConfig):
+def _manager_for_universe(syms: List[str], config: SystemConfig, use_cache: bool = True):
     """返回覆盖 ``syms`` 的数据管理器（不在当前池的标的按数据源临时拉取，缓存复用）。"""
     mdm = get_data_manager(config)
     missing = [s for s in syms if s not in mdm.symbols]
@@ -131,7 +135,7 @@ def _manager_for_universe(syms: List[str], config: SystemConfig):
     try:
         common = dict(symbols=syms, start=DATA_CFG["start"], end=DATA_CFG["end"],
                       benchmark=DATA_CFG["benchmark"], cache_dir=DATA_CFG["cache_dir"],
-                      refresh=False, config=config)
+                      refresh=not use_cache, config=config)
         m = MarketDataManager.from_baostock(**common) if src == "baostock" else MarketDataManager.from_akshare(**common)
         got = [s for s in syms if s in m.symbols]
         return (m, got) if got else (mdm, [s for s in syms if s in mdm.symbols])
@@ -226,15 +230,36 @@ def list_strategies() -> Dict[str, str]:
     return {key: cls.name for key, cls in TEMPLATES.items()}
 
 
+_STRATEGY_DESC = {
+    "short_strength": {
+        "use": "筛选近期放量上攻、值得 1-10 天重点观察的短线强势股（非慢速蓝筹）。",
+        "factors": "3/5/10日涨幅、量能放大倍数、站上MA5/MA10、突破20日新高、RSI 50-85。",
+        "risk": "短线波动大，追高/超买风险高；务必设止损，避免连续大跌与流动性差个股。",
+    },
+    "trend_quality": {
+        "use": "筛选趋势稳健、回撤可控、适合 1-8 周持有的中短线趋势股。",
+        "factors": "MA20/MA60多头排列、20日波动率、最大回撤、成交额稳定性、价格强度。",
+        "risk": "趋势可能反转；放量破位需及时离场。",
+    },
+    "quality_value": {
+        "use": "筛选估值合理、盈利质量好、适合 1-6 个月中线的质量价值股。",
+        "factors": "ROE、低PE/PB、营收/净利增长、趋势过滤。",
+        "risk": "价值回归较慢；注意基本面变化与行业景气下行。",
+    },
+}
+
+
 def strategy_catalog() -> Dict[str, Any]:
-    """返回分类后的策略目录：核心 / 高级实验，含中文名与适用周期。"""
+    """返回分类后的策略目录：核心 / 高级实验，含中文名、适用周期与说明。"""
     from aqs.strategy.templates import CORE_STRATEGIES, ADVANCED_STRATEGIES, DEFAULT_STRATEGY
     from aqs.research.screener import PROFILES
 
     def entry(key):
         cls = TEMPLATES[key]
         prof = PROFILES.get(key)
-        return {"key": key, "name": cls.name, "horizon": getattr(prof, "horizon", "")}
+        d = _STRATEGY_DESC.get(key, {})
+        return {"key": key, "name": cls.name, "horizon": getattr(prof, "horizon", ""),
+                "use": d.get("use", ""), "factors": d.get("factors", ""), "risk": d.get("risk", "")}
 
     return {
         "core": [entry(k) for k in CORE_STRATEGIES],
@@ -861,6 +886,7 @@ def screen_stocks(
     exclude_st: bool = True,
     exclude_slow_blue_chip: bool = True,
     max_market_cap: float = 3000e8,
+    use_cache: bool = True,
     auction: Optional[dict] = None,
     save: bool = False,
     config: SystemConfig = DEFAULT_CONFIG,
@@ -868,8 +894,8 @@ def screen_stocks(
     """按所选策略画像筛选 Top N 候选股（含信号/选中原因/风险提示）。"""
     from aqs.research.screener import Screener, ScreenConfig, PROFILES, ShortStrengthProfile
 
-    if universe is not None and str(universe) not in ("", "default", "all"):
-        mdm, syms = _manager_for_universe(resolve_universe(universe), config)
+    if universe is not None and str(universe) not in ("", "default"):
+        mdm, syms = _manager_for_universe(resolve_universe(universe), config, use_cache=use_cache)
     else:
         mdm = get_data_manager(config)
         syms = list(mdm.symbols)
