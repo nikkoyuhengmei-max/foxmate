@@ -110,15 +110,25 @@ aquant backtest --strategy multi_factor --start 2024-01-01 --end 2026-06-12 --un
 
 | key | 名称 | 适用周期 | 主要逻辑 |
 |-----|------|----------|----------|
-| `short_strength` ⭐默认 | 短线强势股 | 1-10 天 | 近期涨幅强(5日>3%)+量能放大(>1.3x)+站上MA5/MA10+突破20日新高+RSI 50-85不过热，排除ST/低流动性/**超大市值慢速蓝筹** |
-| `trend_quality` | 稳健趋势选股 | 1-8 周 | MA20/MA60多头排列、低波动、回撤可控、成交额、价格强度 |
+| `predictive_ranking` ⭐默认 | 预测上涨模型 | 未来 3/5/10 天 | 找**未来可能上涨**的股票：两层模型(规则过滤+预测评分)，融合 K线/量价/趋势/舆情/风险，输出上涨概率/预期收益/风险等级/推荐理由 |
+| `short_strength` | 短线强势股 | 1-10 天 | 找**已经强势、资金活跃**的股票：5日>3%+量能放大+站上MA5/MA10+突破20日新高+RSI不过热 |
+| `trend_quality` | 稳健趋势选股 | 1-8 周 | 趋势稳、回撤小：MA20/MA60多头排列、低波动、回撤可控 |
 | `quality_value` | 质量价值选股 | 1-6 个月 | ROE、低PE/PB、营收/净利增长、趋势过滤 |
 
+> `short_strength`(已涨过的强势股) 与 `predictive_ranking`(预测未来上涨) 目标不同，已明确区分。
+
 ```bash
-aquant screen --strategy short_strength --top 20          # 默认即短线强势股
-aquant screen --strategy short_strength --keep-blue-chip  # 不排除超大市值慢蓝筹
-aquant backtest --strategy short_strength
+aquant predict --top 20                        # 预测上涨 Top 20（默认核心）
+aquant predict --symbol 300750.SZ --horizon 5  # 单只未来5日上涨预测
+aquant screen --strategy predictive_ranking --top 20
+aquant screen --strategy short_strength --keep-blue-chip
+aquant backtest --strategy quality_value
 ```
+
+**预测上涨模型**输出每只：3/5/10日上涨概率、预期5日收益、资金/技术/舆情/风险分项评分、综合评分、
+信号(高潜力观察/谨慎观察/等待回调/过热风险/排除)、推荐理由、风险提示。两层模型先规则过滤(剔除 ST/停牌/退市/
+低流动性/严重过热/放量大跌)，再用横截面 logistic/GBDT 预测上涨概率。**严格防未来函数**（特征只用当日及之前数据，
+标签为未来收益）。⚠️ 模型预测仅供研究参考，不构成投资建议；预测概率不代表确定收益，历史表现不代表未来结果。
 
 **短线强势股**输出每只：排名、代码、名称、行业、最新价、3/5/10日涨跌幅、量能放大倍数、RSI、是否突破20日新高、
 综合评分、**信号(强势观察/回踩观察/过热谨慎/排除)、选中原因、风险提示**。

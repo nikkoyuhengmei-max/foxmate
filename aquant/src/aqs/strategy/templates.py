@@ -448,6 +448,35 @@ class _ScreenStrategy(Strategy):
                 ctx.order_target_percent(sym, w, tag=self.name)
 
 
+class PredictiveRanking(Strategy):
+    """预测上涨模型：每次调仓买入"未来上涨概率"最高的若干只。"""
+
+    name = "预测上涨模型"
+
+    def __init__(self, top_n: int = 5, rebalance: str = "monthly") -> None:
+        self.top_n = top_n
+        self.rebalance = rebalance
+
+    def initialize(self, ctx: Context) -> None:
+        ctx.schedule_function(self.rebalance_portfolio, self.rebalance)
+
+    def rebalance_portfolio(self, ctx: Context) -> None:
+        from aqs.ml.predictive import predict_universe
+
+        df = predict_universe(ctx.data, universe=ctx.universe, asof=ctx.now, top_n=max(self.top_n * 2, self.top_n))
+        if df.empty:
+            return
+        good = [s for s in df.index if df.loc[s, "signal"] in ("高潜力观察", "谨慎观察")][: self.top_n]
+        winners = good or [s for s in df.index if df.loc[s, "signal"] != "排除"][: self.top_n]
+        for sym in list(ctx.get_account()["positions"]):
+            if sym not in winners and ctx.can_trade(sym):
+                ctx.order_target_percent(sym, 0.0, tag="exit")
+        w = (0.95 / len(winners)) if winners else 0.0
+        for sym in winners:
+            if ctx.can_trade(sym):
+                ctx.order_target_percent(sym, w, tag=self.name)
+
+
 class ShortStrength(_ScreenStrategy):
     name = "短线强势股"
     profile_key = "short_strength"
@@ -481,7 +510,8 @@ class QualityValue(_ScreenStrategy):
 
 
 TEMPLATES = {
-    # —— 核心策略（与首页选股画像一致）——
+    # —— 核心策略 ——
+    "predictive_ranking": PredictiveRanking,
     "short_strength": ShortStrength,
     "trend_quality": TrendQuality,
     "quality_value": QualityValue,
@@ -501,6 +531,6 @@ TEMPLATES = {
 }
 
 # 核心策略（首页默认展示）与高级/实验策略分类
-CORE_STRATEGIES = ["short_strength", "trend_quality", "quality_value"]
+CORE_STRATEGIES = ["predictive_ranking", "short_strength", "trend_quality", "quality_value"]
 ADVANCED_STRATEGIES = [k for k in TEMPLATES if k not in CORE_STRATEGIES]
-DEFAULT_STRATEGY = "short_strength"
+DEFAULT_STRATEGY = "predictive_ranking"

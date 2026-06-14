@@ -107,6 +107,15 @@ def create_app() -> "FastAPI":
     def stock_detail(symbol: str = Query(...), strategy: str = "short_strength") -> Dict[str, Any]:
         return service.stock_detail(symbol, strategy=strategy)
 
+    @app.get("/api/predict")
+    def predict_top(top_n: int = 20, universe: Optional[str] = None, horizon: int = 5,
+                    use_sentiment: bool = False) -> Dict[str, Any]:
+        return service.predict_top(top_n=top_n, universe=universe, horizon=horizon, use_sentiment=use_sentiment)
+
+    @app.get("/api/predict/symbol/{symbol}")
+    def predict_symbol(symbol: str, horizon: int = 5, use_sentiment: bool = False) -> Dict[str, Any]:
+        return service.predict_symbol(symbol, horizon=horizon, use_sentiment=use_sentiment)
+
     @app.get("/api/sentiment/symbol/{symbol}")
     def sentiment_symbol(symbol: str) -> Dict[str, Any]:
         return service.sentiment_for(symbol)

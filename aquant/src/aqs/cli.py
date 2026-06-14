@@ -139,6 +139,38 @@ def cmd_screen(args) -> int:
     return 0
 
 
+def cmd_predict(args) -> int:
+    if getattr(args, "symbol", None):
+        r = service.predict_symbol(args.symbol, horizon=args.horizon, use_sentiment=getattr(args, "use_sentiment", False))
+        if not r.get("success"):
+            print("预测失败：" + r.get("error", "")); return 1
+        p = r["prediction"]
+        print(f"\n{r['symbol']} {r.get('name','')} 预测上涨模型:")
+        print(f"  3日上涨概率: {p.get('prob_up_3d',0)*100:.0f}%  5日: {p.get('prob_up_5d',0)*100:.0f}%  10日: {p.get('prob_up_10d',0)*100:.0f}%")
+        print(f"  预期5日收益: {p.get('expected_return_5d',0)*100:.1f}%  综合评分: {p.get('final_score')}  信号: {p.get('signal')}")
+        print(f"  推荐理由: {p.get('reason')}")
+        print(f"  风险提示: {p.get('risk')}")
+        print(f"\n{r.get('disclaimer','')}")
+        return 0
+    import time as _t
+    t0 = _t.time()
+    res = service.predict_top(top_n=args.top, horizon=args.horizon, use_sentiment=getattr(args, "use_sentiment", False))
+    flag = "真实数据" if res.get("is_real_data") else "示例数据(回退)"
+    print(f"\n未来可能上涨股票 Top {res['top_n']} (asof={res.get('asof')}, {res.get('source')}/{flag}):")
+    print("-" * 104)
+    print(f"{'#':<3}{'代码':<11}{'名称':<10}{'3日↑':>6}{'5日↑':>6}{'10日↑':>6}{'预期5日':>8}{'综合':>7}  {'信号':<8}{'理由'}")
+    for p in res.get("picks", []):
+        print(f"{p.get('rank',''):<3}{p.get('symbol',''):<11}{str(p.get('name','')):<10}"
+              f"{(p.get('prob_up_3d') or 0)*100:>5.0f}%{(p.get('prob_up_5d') or 0)*100:>5.0f}%{(p.get('prob_up_10d') or 0)*100:>5.0f}%"
+              f"{(p.get('expected_return_5d') or 0)*100:>7.1f}%{p.get('final_score',0):>7.1f}  {str(p.get('signal','')):<8}{str(p.get('reason',''))[:40]}")
+    print("-" * 104)
+    if not res.get("picks"):
+        print("无结果。")
+    print(f"用时 {_t.time()-t0:.1f} 秒")
+    print(res.get("disclaimer", ""))
+    return 0
+
+
 def cmd_sentiment(args) -> int:
     if getattr(args, "symbol", None):
         res = service.sentiment_for(args.symbol)
@@ -251,7 +283,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("quality", help="数据质量报告", parents=[data]).set_defaults(func=cmd_quality)
 
     bt = sub.add_parser("backtest", help="运行回测", parents=[data])
-    bt.add_argument("--strategy", default="short_strength")
+    bt.add_argument("--strategy", default="predictive_ranking")
     bt.add_argument("--params", help="JSON 参数, 如 '{\"top_n\":5}'")
     bt.add_argument("--fill", default="next_open", choices=["next_open", "close"])
     bt.add_argument("--rebalance", choices=["daily", "weekly", "monthly"], help="调仓频率")
@@ -283,6 +315,13 @@ def build_parser() -> argparse.ArgumentParser:
                     help="加入舆情/关注度因子(辅助)")
     sc.add_argument("--save", action="store_true", help="导出结果到 outputs/")
     sc.set_defaults(func=cmd_screen)
+
+    pr = sub.add_parser("predict", help="预测上涨模型(未来3/5/10日)", parents=[data])
+    pr.add_argument("--symbol", help="单只股票预测；不指定则看 Top")
+    pr.add_argument("--horizon", type=int, default=5, choices=[3, 5, 10])
+    pr.add_argument("--top", type=int, default=20)
+    pr.add_argument("--use-sentiment", dest="use_sentiment", action="store_true", default=False)
+    pr.set_defaults(func=cmd_predict)
 
     se = sub.add_parser("sentiment", help="舆情/关注度因子", parents=[data])
     se.add_argument("--symbol", help="查看单只股票舆情；不指定则看 Top")

@@ -100,6 +100,7 @@
       <label class="sub"><input type="checkbox" id="exclBlue" checked onchange="runScreen()"> 排除超大市值慢速蓝筹</label>
       <label class="sub"><input type="checkbox" id="useSent" onchange="runScreen()"> 舆情因子(辅助)</label>
       <button id="runScreenBtn" onclick="runScreen()">运行选股</button>
+      <button id="runBtBtn" class="secondary" onclick="runBacktest()">策略历史表现</button>
       <span id="msg" class="sub"></span>
     </div>
     <div class="sub" id="stratHint" style="margin-top:8px"></div>
@@ -327,7 +328,8 @@ async function runScreen(){
   const exb=document.getElementById('exclBlue').checked;
   window.useSent=document.getElementById('useSent').checked;
   if(!currentStrategy){document.getElementById('screen').innerHTML='<div class="neg">策略为空，请选择策略</div>';screenRunning=false;return;}
-  document.getElementById('screenTitle').firstChild.nodeValue=`今日${stratName()} Top ${top} `;
+  const title = (currentStrategy==='predictive_ranking') ? `未来可能上涨股票 Top ${top} ` : `今日${stratName()} Top ${top} `;
+  document.getElementById('screenTitle').firstChild.nodeValue=title;
   document.querySelectorAll('button').forEach(b=>{}); busy('runScreenBtn',true,'运行中…');
   const t0=performance.now();
   const stages=['正在获取股票池…','正在拉取行情数据…','正在计算短线因子…','正在排序 Top N…','正在生成结果…'];
@@ -344,9 +346,13 @@ async function runScreen(){
     renderScreen({picks:res.results||[], strategy_name:res.strategy_name, asof:res.asof_date,
                   is_real_data:res.is_real_data, source:res.data_source});
     const dt=(res.elapsed_seconds!=null)?res.elapsed_seconds:((performance.now()-t0)/1000).toFixed(1);
-    document.getElementById('screenMeta').textContent+= ` · 用时 ${dt}s`;
+    document.getElementById('screenMeta').innerHTML+= ` · 用时 ${dt}s`;
     log('选股完成，用时 '+dt+' 秒');
-    await loadStatus(); runBacktest();
+    await loadStatus();
+    // 预测模型回测较慢 -> 不自动跑，提示手动；其它策略自动展示历史表现
+    if(currentStrategy==='predictive_ranking'){
+      document.getElementById('btSettings').innerHTML='预测模型回测较慢，点上方「策略历史表现」按需运行。';
+    } else { runBacktest(); }
   }catch(e){
     clearInterval(timer);
     const msg=(e.name==='AbortError')?'运行超时，请减少股票池范围或检查数据源。':('运行失败：'+e.message+'（可能数据源连接失败/登录失败）');
@@ -355,6 +361,7 @@ async function runScreen(){
 }
 function sigClass(s){return (s==='强势观察'||s==='买入候选')?'sig-buy':(s==='观察'||s==='回踩观察')?'sig-obs':(s==='过热谨慎')?'neg':'sig-ex';}
 function sentSigClass(s){return s==='负面风险'?'neg':(s==='过热谨慎')?'neg':(s==='热度上升'||s==='情绪偏正面')?'pos':'sig-ex';}
+function predSigClass(s){return s==='高潜力观察'?'sig-buy':s==='谨慎观察'?'sig-obs':s==='等待回调'?'sig-obs':'neg';}
 function renderScreen(res){
   const picks=res.picks||[]; lastScreenPicks=picks; rebuildQuick();
   const sent=!!window.useSent;
@@ -363,6 +370,7 @@ function renderScreen(res){
   if(sent&&sm){ meta+=' · 舆情:'+(sm.is_mock?'<span class="pill mock">示例舆情数据</span>':(sm.available?sm.source:'无数据N/A')); }
   document.getElementById('screenMeta').innerHTML=meta;
   if(!picks.length){document.getElementById('screen').innerHTML='<div class="empty">没有筛选出符合条件的股票，请降低筛选条件或扩大股票池。</div>';return;}
+  if(currentStrategy==='predictive_ranking'){ return renderPredictive(picks); }
   const sh = sent? '<th>舆情热度</th><th>热度变化</th><th>情绪</th><th>新闻</th><th>风险词</th><th class="lft">舆情信号</th>' : '';
   let h='<table><thead><tr><th>排名</th><th class="lft">名称</th><th class="lft">代码</th><th class="lft">行业</th><th>最新价</th><th>3日</th><th>5日</th><th>10日</th><th>量能放大</th><th>RSI</th><th>突破</th>'+sh+'<th>综合评分</th><th class="lft">信号</th><th class="lft">原因</th><th class="lft">风险</th><th class="lft">操作</th></tr></thead><tbody>';
   picks.forEach(p=>{ const bo=p.breakout_20d?'<span class="pos">▲新高</span>':'—';
@@ -385,6 +393,29 @@ function renderScreen(res){
       <button class="mini secondary" onclick="addPaper('${p.symbol}')">模拟</button>
     </td></tr>`; });
   let foot = sent? '<div class="sub" style="margin-top:6px;color:var(--yellow)">舆情为辅助因子，舆情热度不等于投资价值，不能单独作为买入依据。</div>':'';
+  document.getElementById('screen').innerHTML=h+'</tbody></table>'+foot;
+}
+
+function renderPredictive(picks){
+  const pc=v=>v==null||isNaN(v)?'N/A':(v*100).toFixed(0)+'%';
+  let h='<table><thead><tr><th>排名</th><th class="lft">名称</th><th class="lft">代码</th><th class="lft">行业</th><th>最新价</th>'
+    +'<th>3日↑</th><th>5日↑</th><th>10日↑</th><th>预期5日</th><th>资金</th><th>技术</th><th>舆情</th><th>风险</th><th>综合</th>'
+    +'<th class="lft">信号</th><th class="lft">推荐理由</th><th class="lft">风险提示</th><th class="lft">操作</th></tr></thead><tbody>';
+  picks.forEach(p=>{ const na=v=>(v==null||(typeof v==='number'&&isNaN(v)))?'N/A':(typeof v==='number'?v.toFixed(0):v);
+    h+=`<tr><td>${p.rank}</td><td class="lft">${p.name||''}</td><td class="lft">${p.symbol}</td><td class="lft">${p.industry||'未分类'}</td>
+    <td>${p.close}</td>
+    <td>${pc(p.prob_up_3d)}</td><td class="${(p.prob_up_5d||0)>=0.5?'pos':'neg'}">${pc(p.prob_up_5d)}</td><td>${pc(p.prob_up_10d)}</td>
+    <td class="${cls(p.expected_return_5d||0)}">${p.expected_return_5d!=null?fmtPct(p.expected_return_5d):'N/A'}</td>
+    <td>${na(p.money_score)}</td><td>${na(p.tech_score)}</td><td>${na(p.sentiment_factor_score)}</td><td>${na(p.risk_score)}</td>
+    <td><b>${(p.final_score!=null?p.final_score.toFixed(0):'-')}</b></td>
+    <td class="lft ${predSigClass(p.signal)}">${p.signal||''}</td>
+    <td class="lft reason">${p.reason||''}</td><td class="lft reason">${p.risk||''}</td>
+    <td class="lft row-actions">
+      <button class="mini secondary" onclick="viewDetail('${p.symbol}')">详情</button>
+      <button class="mini secondary" onclick="forecastSym('${p.symbol}')">预测</button>
+      <button class="mini secondary" onclick="addWatchSym('${p.symbol}')">自选</button>
+      <button class="mini secondary" onclick="addPaper('${p.symbol}')">模拟</button></td></tr>`; });
+  const foot='<div class="sub" style="margin-top:6px;color:var(--yellow)">模型预测仅供研究参考，不构成投资建议。预测概率不代表确定收益，历史表现不代表未来结果。</div>';
   document.getElementById('screen').innerHTML=h+'</tbody></table>'+foot;
 }
 
@@ -437,7 +468,16 @@ function addPaper(s){ log('已加入模拟交易候选：'+s+'（运行 `aquant 
 
 async function runBacktest(){
   const msg=document.getElementById('msg');msg.textContent='加载策略历史表现…';log('回测：'+currentStrategy);
-  const res=await api('/api/backtest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({strategy:currentStrategy})});
+  busy('runBtBtn',true,'回测中…');
+  document.getElementById('btSettings').innerHTML='回测运行中…'+(currentStrategy==='predictive_ranking'?'（预测模型较慢，请稍候）':'');
+  let res;
+  try{
+    res=await api('/api/backtest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({strategy:currentStrategy})},180000);
+  }catch(e){
+    const m=(e.name==='AbortError')?'回测超时，请缩小股票池或更换策略。':('回测失败：'+e.message);
+    document.getElementById('btSettings').innerHTML='<span class="neg">'+m+'</span>'; busy('runBtBtn',false); msg.textContent=''; log(m); return;
+  }
+  busy('runBtBtn',false);
   msg.textContent='回测完成';
   const s=res.settings||{};
   document.getElementById('btSettings').innerHTML=`回测区间 <b>${s.start}~${s.end}</b> · 基准 <b>${s.benchmark}</b> · 调仓 <b>${s.rebalance||'-'}</b>

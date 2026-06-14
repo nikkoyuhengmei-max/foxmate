@@ -65,8 +65,9 @@ def test_normalize_symbol():
 
 def test_strategies_catalog_not_empty(client):
     cat = client.get("/api/strategies/catalog").json()
-    assert [e["key"] for e in cat["core"]] == ["short_strength", "trend_quality", "quality_value"]
-    assert cat["core"][0]["name"] == "短线强势股"
+    assert [e["key"] for e in cat["core"]] == ["predictive_ranking", "short_strength", "trend_quality", "quality_value"]
+    assert cat["core"][0]["name"] == "预测上涨模型"
+    assert cat["default"] == "predictive_ranking"
 
 
 def test_no_mock_fallback_on_real_source_failure(monkeypatch):

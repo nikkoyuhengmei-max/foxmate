@@ -15,16 +15,17 @@ def use_sample():
 
 
 def test_core_strategies_defined():
-    assert CORE_STRATEGIES == ["short_strength", "trend_quality", "quality_value"]
-    assert DEFAULT_STRATEGY == "short_strength"
-    for k in CORE_STRATEGIES:
+    assert CORE_STRATEGIES == ["predictive_ranking", "short_strength", "trend_quality", "quality_value"]
+    assert DEFAULT_STRATEGY == "predictive_ranking"
+    # predictive_ranking 是 ML 引擎，不在 PROFILES（选股画像）里；其余在
+    for k in ["short_strength", "trend_quality", "quality_value"]:
         assert k in PROFILES
 
 
 def test_catalog_structure():
     cat = service.strategy_catalog()
     assert [e["key"] for e in cat["core"]] == CORE_STRATEGIES
-    assert cat["default"] == "short_strength"
+    assert cat["default"] == "predictive_ranking"
     # 高级策略包含被降级的旧策略
     adv = [e["key"] for e in cat["advanced"]]
     for k in ["double_ma", "reversal", "grid", "etf_rotation", "short_momentum"]:

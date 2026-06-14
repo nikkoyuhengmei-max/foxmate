@@ -311,6 +311,11 @@ def list_strategies() -> Dict[str, str]:
 
 
 _STRATEGY_DESC = {
+    "predictive_ranking": {
+        "use": "找未来 3/5/10 天可能上涨的股票（不是已经最强的），给出上涨概率/预期收益/风险等级。",
+        "factors": "K线技术(MA/MACD/KDJ/RSI/布林/ATR)+量价资金+趋势形态+舆情关注度+风险，两层模型(规则过滤+预测评分)。",
+        "risk": "预测概率不代表确定收益，历史表现不代表未来；跌破关键均线模型信号可能失效。",
+    },
     "short_strength": {
         "use": "筛选近期放量上攻、值得 1-10 天重点观察的短线强势股（非慢速蓝筹）。",
         "factors": "3/5/10日涨幅、量能放大倍数、站上MA5/MA10、突破20日新高、RSI 50-85。",
@@ -389,7 +394,7 @@ def _ensure_outputs() -> str:
 
 
 def run_backtest(
-    strategy: str = "short_strength",
+    strategy: str = "predictive_ranking",
     params: Optional[dict] = None,
     start: Optional[str] = None,
     end: Optional[str] = None,
@@ -634,6 +639,42 @@ def sentiment_top(top_n: int = 20, universe=None, config: SystemConfig = DEFAULT
     rows = sorted(records.values(), key=lambda r: r.get("attention_score", 0), reverse=True)[:top_n]
     return {"top_n": top_n, "available": bool(rows), "is_mock": bool(meta.get("is_mock")),
             "meta": meta, "results": rows, "disclaimer": meta.get("disclaimer", "")}
+
+
+def predict_symbol(symbol: str, horizon: int = 5, use_sentiment: bool = False,
+                   config: SystemConfig = DEFAULT_CONFIG) -> Dict[str, Any]:
+    """单只股票的预测上涨模型结果。"""
+    from aqs.data import directory
+    from aqs.ml.predictive import predict_universe, DISCLAIMER
+
+    resolved = directory.resolve(symbol)
+    if not resolved:
+        return {"success": False, "error": "未找到该股票代码或名称。"}
+    try:
+        mdm = _manager_for_symbol(resolved, config)
+    except Exception as exc:  # noqa: BLE001
+        return {"success": False, "error": f"数据源取数失败，请检查 Baostock/AkShare：{exc}"}
+    if mdm is None:
+        return {"success": False, "error": "数据源取数失败，请检查 Baostock/AkShare。"}
+    sentiment = None
+    if use_sentiment:
+        sentiment, _ = _sentiment_records([resolved], names={resolved: directory.name_of(resolved)})
+    df = predict_universe(mdm, universe=[resolved], top_n=1, sentiment=sentiment)
+    if df.empty or resolved not in df.index:
+        return {"success": False, "error": "数据不足，无法预测该股票。"}
+    rec = df.loc[resolved].to_dict()
+    rec.pop("feat", None)
+    return {"success": True, "symbol": resolved, "name": rec.get("name", ""),
+            "horizon": horizon, "prediction": {k: rec[k] for k in rec},
+            "disclaimer": DISCLAIMER}
+
+
+def predict_top(top_n: int = 20, universe=None, horizon: int = 5, use_sentiment: bool = False,
+                config: SystemConfig = DEFAULT_CONFIG) -> Dict[str, Any]:
+    res = screen_stocks(strategy="predictive_ranking", top_n=top_n, universe=universe,
+                        use_sentiment=use_sentiment, config=config)
+    res["horizon"] = horizon
+    return res
 
 
 def normalize_symbol(text: str) -> Optional[str]:
@@ -1000,22 +1041,27 @@ def stock_detail(symbol: str, strategy: str = "short_strength", config: SystemCo
 
 
 def refresh_real_data(
-    strategy: str = "short_strength",
+    strategy: str = "predictive_ranking",
     forecast_sym: str = "600519.SH",
     top_n: int = 20,
+    run_backtest_too: bool = False,
 ) -> Dict[str, Any]:
-    """重新拉取真实数据并刷新 screen / backtest / forecast 输出（供仪表盘"刷新"按钮）。"""
+    """重新拉取真实数据并刷新 screen / forecast 输出（供仪表盘"刷新"按钮）。
+
+    预测模型回测较慢，默认不在刷新里跑回测（可由前端"策略历史表现"按需运行）。
+    """
     get_data_manager(refresh=True)  # 重新加载数据
     screen = screen_stocks(strategy=strategy, top_n=top_n, save=True)
-    backtest = run_backtest(strategy=strategy, save=True, monte_carlo=False)
     forecast = forecast_symbol(forecast_sym)
-    return {
+    out = {
         "status": data_status(),
         "screen": screen,
-        "backtest_metrics": backtest["metrics"],
         "forecast": forecast,
         "refreshed_at": _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
+    if run_backtest_too:
+        out["backtest_metrics"] = run_backtest(strategy=strategy, save=True, monte_carlo=False)["metrics"]
+    return out
 
 
 def screen_stocks(
@@ -1041,6 +1087,29 @@ def screen_stocks(
     else:
         mdm = get_data_manager(config)
         syms = list(mdm.symbols)
+
+    sessions = mdm.trading_dates(end=asof) if asof else mdm.trading_dates()
+    asof_date = asof or (str(sessions[-1].date()) if len(sessions) else None)
+
+    # 预测上涨模型走独立的 ML 引擎
+    if strategy == "predictive_ranking":
+        from aqs.ml.predictive import predict_universe, DISCLAIMER
+
+        sentiment = sent_meta = None
+        if use_sentiment:
+            names = {s: (mdm.instrument(s).name if mdm.instrument(s) else "") for s in syms}
+            sentiment, sent_meta = _sentiment_records(syms, names=names, asof=asof, use_cache=use_cache)
+        df = predict_universe(mdm, universe=syms or None, asof=asof, top_n=top_n, sentiment=sentiment)
+        picks = df.reset_index().to_dict(orient="records") if not df.empty else []
+        return {
+            "strategy": "predictive_ranking", "strategy_name": "预测上涨模型",
+            "horizon": "未来 3/5/10 个交易日",
+            "asof": asof_date, "top_n": top_n,
+            "universe": universe if isinstance(universe, str) else (f"custom({len(syms)})" if universe else "default"),
+            "use_sentiment": bool(use_sentiment), "sentiment_meta": sent_meta,
+            "is_real_data": bool(_ACTUAL["is_real"]), "source": active_source(),
+            "picks": picks, "disclaimer": DISCLAIMER,
+        }
 
     cfg = ScreenConfig(exclude_st=exclude_st, min_amount=min_amount)
     profile = strategy if strategy in PROFILES else "short_strength"
