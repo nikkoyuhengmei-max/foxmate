@@ -68,6 +68,19 @@ def create_app() -> "FastAPI":
     def strategies_catalog() -> Dict[str, Any]:
         return service.strategy_catalog()
 
+    @app.get("/api/timing/mode")
+    def timing_mode() -> Dict[str, Any]:
+        return service.current_mode()
+
+    @app.post("/api/timing/run")
+    def timing_run(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        payload = payload or {}
+        return service.run_mode(
+            payload.get("mode", "after_close"),
+            strategy=payload.get("strategy", "short_strength"),
+            top_n=payload.get("top_n", 20),
+        )
+
     @app.get("/api/stock/detail")
     def stock_detail(symbol: str = Query(...), strategy: str = "short_strength") -> Dict[str, Any]:
         return service.stock_detail(symbol, strategy=strategy)

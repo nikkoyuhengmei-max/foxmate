@@ -128,6 +128,39 @@ def cmd_screen(args) -> int:
     return 0
 
 
+def cmd_timing(args) -> int:
+    if not getattr(args, "mode", None):
+        cm = service.current_mode()
+        print(f"\n系统时间: {cm['system_time']}  (交易日: {cm['is_trading_day']})")
+        print(f"建议: {cm['advice']}")
+        print("\n可用时间模式:")
+        for m in cm["modes"]:
+            star = " ←建议" if m["key"] == cm["suggested"] else ""
+            print(f"  {m['key']:<16}{m['name']}  [{m['window']}]  {m['desc']}{star}")
+        print(f"\n{cm['disclaimer']}")
+        return 0
+
+    res = service.run_mode(args.mode, strategy=getattr(args, "strategy", "short_strength"), top_n=args.top)
+    print(f"\n【{res.get('title', args.mode)}】")
+    if res.get("supported") is False or res.get("realtime") is False or res.get("message"):
+        if res.get("message"):
+            print("  " + res["message"])
+        if res.get("advice"):
+            print("  操作建议: " + res["advice"])
+    for p in res.get("picks", [])[: args.top]:
+        if args.mode in ("after_close", "close_review"):
+            print(f"  {p.get('rank','-')} {p.get('symbol','')} {p.get('name','')} "
+                  f"5日{(p.get('ret_5d') or 0)*100:.1f}% 评分{p.get('score',0):.2f} {p.get('signal','')}")
+        elif args.mode == "auction_confirm":
+            print(f"  {p.get('symbol','')} {p.get('name','')} 竞价{(p.get('auction_pct') or 0)*100:.1f}% "
+                  f"高开过多={p.get('high_open_too_much')} 低开破位={p.get('low_open_break')}")
+        elif args.mode == "open_confirm":
+            print(f"  {p.get('symbol','')} {p.get('name','')} 开盘{(p.get('open_pct') or 0)*100:.1f}% "
+                  f"当前{(p.get('now_pct') or 0)*100:.1f}% 站上开盘={p.get('above_open')}")
+    print(f"\n{res.get('disclaimer','')}")
+    return 0
+
+
 def cmd_forecast(args) -> int:
     res = service.forecast_symbol(args.symbol, horizon=args.horizon)
     print(json.dumps(res, ensure_ascii=False, indent=2))
@@ -204,6 +237,13 @@ def build_parser() -> argparse.ArgumentParser:
                     default=True, help="不排除超大市值慢速蓝筹")
     sc.add_argument("--save", action="store_true", help="导出结果到 outputs/")
     sc.set_defaults(func=cmd_screen)
+
+    tm = sub.add_parser("timing", help="短线选股时间模式", parents=[data])
+    tm.add_argument("--mode", choices=["after_close", "auction_confirm", "open_confirm", "close_review"],
+                    help="不指定则显示当前建议模式")
+    tm.add_argument("--strategy", default="short_strength")
+    tm.add_argument("--top", type=int, default=20)
+    tm.set_defaults(func=cmd_timing)
 
     fc = sub.add_parser("forecast", help="走势分析与预测", parents=[data])
     fc.add_argument("--symbol", required=True)

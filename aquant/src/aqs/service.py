@@ -577,6 +577,218 @@ def _write_trades(trades, mode: str) -> Optional[str]:
     return path
 
 
+# ============================================================ 短线选股时间模式
+TRADING_MODES = [
+    {"key": "after_close", "name": "收盘后选股", "window": "15:10 以后",
+     "desc": "用当天完整日线数据生成明日短线观察池"},
+    {"key": "auction_confirm", "name": "竞价确认", "window": "9:25-9:30",
+     "desc": "检查昨日观察池在集合竞价后的表现"},
+    {"key": "open_confirm", "name": "开盘确认", "window": "9:30-10:00",
+     "desc": "检查开盘后是否有分时承接"},
+    {"key": "close_review", "name": "尾盘复核", "window": "14:30-14:50",
+     "desc": "筛选全天强势且无明显回落的股票，加入次日观察池"},
+]
+
+_DISCLAIMER = "所有结果仅供研究，不构成投资建议。市场有风险，投资需谨慎。"
+
+
+def current_mode() -> Dict[str, Any]:
+    """根据当前系统时间给出建议运行的时间模式。"""
+    now = _dt.datetime.now()
+    t = now.hour * 60 + now.minute
+    is_trading_day = now.weekday() < 5
+    suggested = None
+    if t >= 15 * 60 + 10:
+        suggested = "after_close"
+    elif 9 * 60 + 25 <= t < 9 * 60 + 30:
+        suggested = "auction_confirm"
+    elif 9 * 60 + 30 <= t < 10 * 60:
+        suggested = "open_confirm"
+    elif 14 * 60 + 30 <= t <= 14 * 60 + 50:
+        suggested = "close_review"
+
+    if not is_trading_day:
+        suggested = None
+        advice = "今日非交易日，建议仅查看研究结果。"
+    elif suggested is None:
+        advice = "当前非关键交易决策窗口，建议仅查看研究结果。"
+    else:
+        name = next(m["name"] for m in TRADING_MODES if m["key"] == suggested)
+        advice = f"建议运行「{name}」。"
+
+    return {
+        "suggested": suggested,
+        "advice": advice,
+        "is_trading_day": is_trading_day,
+        "system_time": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "modes": TRADING_MODES,
+        "disclaimer": _DISCLAIMER,
+    }
+
+
+def _watch_pool_path() -> str:
+    return os.path.join(_ensure_outputs(), "watch_pool.json")
+
+
+def _save_watch_pool(picks: List[dict], kind: str) -> None:
+    import json
+
+    data = {
+        "kind": kind,
+        "saved_at": _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "symbols": [{"symbol": p["symbol"], "name": p.get("name", ""), "industry": p.get("industry", ""),
+                     "close": p.get("close"), "score": p.get("score"), "signal": p.get("signal")}
+                    for p in picks],
+    }
+    with open(_watch_pool_path(), "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False)
+
+
+def load_watch_pool() -> Dict[str, Any]:
+    import json
+
+    path = _watch_pool_path()
+    if not os.path.exists(path):
+        return {"symbols": [], "kind": None, "saved_at": None}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return {"symbols": [], "kind": None, "saved_at": None}
+
+
+def _get_auction(symbols: List[str]) -> Optional[Dict[str, Dict[str, float]]]:
+    """尽力获取集合竞价快照；数据源不支持则返回 None。"""
+    src = DATA_CFG["source"]
+    try:
+        if src == "akshare":
+            from aqs.data.sources.akshare_source import AkShareDataSource
+            return AkShareDataSource().get_call_auction(symbols)
+        if src == "qmt":
+            from aqs.data.sources.qmt import QMTDataSource
+            return QMTDataSource().get_call_auction(symbols)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[auction] 获取竞价数据失败：{exc}")
+    return None
+
+
+def _realtime_spot(symbols: List[str]) -> Optional[Dict[str, dict]]:
+    """尽力获取实时快照(AkShare)；失败返回 None。"""
+    try:
+        import akshare as ak  # type: ignore
+
+        spot = ak.stock_zh_a_spot_em()
+        want = {s.split(".")[0] for s in symbols}
+        out = {}
+        for _, r in spot.iterrows():
+            code = str(r.get("代码", ""))
+            if code not in want:
+                continue
+            suffix = "SH" if code.startswith(("6", "5", "9")) else "SZ"
+            out[f"{code}.{suffix}"] = {
+                "open": r.get("今开"), "prev_close": r.get("昨收"), "last": r.get("最新价"),
+                "pct": r.get("涨跌幅"), "amount": r.get("成交额"), "high": r.get("最高"), "low": r.get("最低"),
+            }
+        return out or None
+    except Exception as exc:  # noqa: BLE001
+        print(f"[realtime] 获取实时行情失败：{exc}")
+        return None
+
+
+def run_mode(mode: str, strategy: str = "short_strength", top_n: int = 20,
+             config: SystemConfig = DEFAULT_CONFIG) -> Dict[str, Any]:
+    """运行某个时间模式。"""
+    if mode == "after_close":
+        res = screen_stocks(strategy=strategy, top_n=top_n, save=True, config=config)
+        _save_watch_pool(res["picks"], "明日观察池")
+        res.update({"mode": mode, "title": f"明日观察池 Top {top_n}", "disclaimer": _DISCLAIMER})
+        return res
+
+    if mode == "close_review":
+        res = screen_stocks(strategy=strategy, top_n=top_n * 2, save=False, config=config)
+        mdm = get_data_manager(config)
+        picks = []
+        for p in res["picks"]:
+            sym = p["symbol"]
+            try:
+                bar = mdm.get_price(sym, fields=["open", "high", "low", "close"]).dropna().iloc[-1]
+                rng = float(bar["high"]) - float(bar["low"])
+                strength = (float(bar["close"]) - float(bar["low"])) / rng if rng > 0 else 1.0
+                day_ret = float(bar["close"]) / float(bar["open"]) - 1.0 if bar["open"] else 0.0
+            except Exception:
+                strength, day_ret = None, None
+            # 全天强势且无明显回落：收盘价位于当日偏上 + 当日上涨
+            if strength is not None and strength >= 0.5 and day_ret is not None and day_ret > 0:
+                p["intraday_strength"] = round(strength, 2)
+                p["day_return"] = round(day_ret, 4)
+                picks.append(p)
+            if len(picks) >= top_n:
+                break
+        _save_watch_pool(picks, "次日观察池")
+        return {"mode": mode, "title": f"尾盘复核 → 次日观察池 ({len(picks)})", "picks": picks,
+                "strategy_name": res.get("strategy_name"), "asof": res.get("asof"),
+                "is_real_data": res.get("is_real_data"), "source": res.get("source"),
+                "note": "用日线近似：收盘位于当日价格区间偏上且当日上涨视为全天强势无明显回落。",
+                "disclaimer": _DISCLAIMER}
+
+    if mode == "auction_confirm":
+        pool = load_watch_pool()
+        syms = [s["symbol"] for s in pool.get("symbols", [])]
+        if not syms:
+            return {"mode": mode, "supported": True, "picks": [],
+                    "message": "暂无观察池，请先运行「收盘后选股」生成明日观察池。", "disclaimer": _DISCLAIMER}
+        auction = _get_auction(syms)
+        if not auction:
+            return {"mode": mode, "supported": False,
+                    "message": "当前数据源不支持竞价确认（需 AkShare 实时或券商 miniQMT 竞价数据）。",
+                    "disclaimer": _DISCLAIMER}
+        rows = []
+        for s in pool["symbols"]:
+            a = auction.get(s["symbol"])
+            if not a:
+                continue
+            gap = a.get("gap")
+            rows.append({
+                "symbol": s["symbol"], "name": s.get("name", ""),
+                "auction_pct": round(gap, 4) if gap is not None else None,
+                "auction_amount": a.get("auction_vol_ratio"),
+                "high_open_too_much": bool(gap is not None and gap > 0.05),
+                "low_open_break": bool(gap is not None and gap < -0.03),
+            })
+        return {"mode": mode, "supported": True, "title": "竞价确认", "picks": rows, "disclaimer": _DISCLAIMER}
+
+    if mode == "open_confirm":
+        pool = load_watch_pool()
+        syms = [s["symbol"] for s in pool.get("symbols", [])]
+        if not syms:
+            return {"mode": mode, "realtime": False, "picks": [],
+                    "message": "暂无观察池，请先运行「收盘后选股」。", "disclaimer": _DISCLAIMER}
+        spot = _realtime_spot(syms)
+        if not spot:
+            return {"mode": mode, "realtime": False,
+                    "message": "无实时行情数据：仅供人工参考，不生成买入信号。",
+                    "advice": "请人工观察：是否站上分时均价线、开盘是否放量承接、所属板块是否走强；"
+                              "高开过多注意回落风险，低开破位注意止损。",
+                    "picks": pool["symbols"], "disclaimer": _DISCLAIMER}
+        rows = []
+        for s in pool["symbols"]:
+            q = spot.get(s["symbol"])
+            if not q:
+                continue
+            op, prev, last = q.get("open"), q.get("prev_close"), q.get("last")
+            open_pct = (op / prev - 1.0) if (op and prev) else None
+            rows.append({
+                "symbol": s["symbol"], "name": s.get("name", ""),
+                "open_pct": round(open_pct, 4) if open_pct is not None else None,
+                "now_pct": round(float(q["pct"]) / 100, 4) if q.get("pct") is not None else None,
+                "amount": q.get("amount"),
+                "above_open": bool(last and op and last >= op),
+            })
+        return {"mode": mode, "realtime": True, "title": "开盘确认", "picks": rows, "disclaimer": _DISCLAIMER}
+
+    return {"error": f"未知模式: {mode}"}
+
+
 def stock_detail(symbol: str, strategy: str = "short_strength", config: SystemConfig = DEFAULT_CONFIG) -> Dict[str, Any]:
     """单只股票的策略解读：为何被选中、关键因子、风险、近期趋势与流动性。"""
     from aqs.data import directory

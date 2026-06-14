@@ -64,6 +64,16 @@
   <div class="status" id="statusBar"><span class="sub">加载中…</span></div>
   <div id="demoBanner"></div>
 
+  <!-- 短线选股时间模式 -->
+  <div class="card" id="timingCard">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <div>⏱ <b>短线时间模式</b> <span id="timingAdvice" class="sub"></span></div>
+      <div id="timingBtns" class="controls" style="margin:0"></div>
+    </div>
+    <div id="timingResult" style="margin-top:10px"></div>
+    <div class="sub" style="margin-top:8px;color:var(--yellow)">⚠️ 第一版仅做研究与模拟，不做真实下单；所有结果仅供研究，不构成投资建议。</div>
+  </div>
+
   <!-- B. 策略选择与运行 -->
   <div class="card">
     <div class="controls" style="margin-bottom:0">
@@ -169,9 +179,42 @@ async function init(){
   catalog.advanced.forEach(e=>{const o=document.createElement('option');o.value=e.key;o.textContent=e.name+' ('+e.key+')';adv.appendChild(o);});
   core.value=catalog.default||'short_momentum'; currentStrategy=core.value;
   updateHint();
-  await loadStatus(); await loadWatchlist(); await loadTrades();
+  await loadStatus(); await loadWatchlist(); await loadTrades(); await loadTimingMode();
   log('工作台已加载，默认策略：'+core.options[core.selectedIndex].text);
   runScreen();
+}
+
+async function loadTimingMode(){
+  const m=await api('/api/timing/mode');
+  document.getElementById('timingAdvice').textContent=m.advice+'（系统时间 '+m.system_time+'）';
+  const box=document.getElementById('timingBtns'); box.innerHTML='';
+  m.modes.forEach(md=>{const b=document.createElement('button'); b.className='secondary mini'; b.textContent=md.name;
+    if(md.key===m.suggested){b.style.background='var(--accent)';b.style.color='#fff';b.style.borderColor='var(--accent)';}
+    b.title=md.window+' · '+md.desc; b.onclick=()=>runTimingMode(md.key,md.name); box.appendChild(b);});
+}
+async function runTimingMode(mode,name){
+  log('运行时间模式：'+name);
+  const tr=document.getElementById('timingResult'); tr.innerHTML='<div class="sub">运行中…</div>';
+  const res=await api('/api/timing/run',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({mode:mode,strategy:currentStrategy,top_n:document.getElementById('topN').value||20})});
+  if(mode==='after_close'||mode==='close_review'){
+    tr.innerHTML='<div class="sub">'+(res.title||'')+(res.note?(' · '+res.note):'')+'，已写入观察池</div>';
+    renderScreen(res); document.getElementById('screenTitle').firstChild.nodeValue=`${res.title||'观察池'} `;
+    await loadStatus(); runBacktest(); return;
+  }
+  if(res.message && (res.supported===false||res.realtime===false||!(res.picks&&res.picks.length))){
+    tr.innerHTML=`<div class="warnbox">${res.message}</div>`+(res.advice?`<div class="sub" style="margin-top:6px">操作建议：${res.advice}</div>`:'');
+    return;
+  }
+  let h='<table><thead><tr><th class="lft">代码</th><th class="lft">名称</th>';
+  h+= mode==='auction_confirm' ? '<th>竞价涨幅</th><th>竞价量</th><th>高开过多</th><th>低开破位</th>'
+                               : '<th>开盘涨幅</th><th>当前涨幅</th><th>成交额</th><th>站上开盘</th>';
+  h+='</tr></thead><tbody>';
+  (res.picks||[]).forEach(p=>{ h+=`<tr><td class="lft">${p.symbol}</td><td class="lft">${p.name||''}</td>`;
+    if(mode==='auction_confirm') h+=`<td class="${cls(p.auction_pct||0)}">${p.auction_pct!=null?fmtPct(p.auction_pct):'N/A'}</td><td>${p.auction_amount!=null?fmtAmt(p.auction_amount):'N/A'}</td><td>${p.high_open_too_much?'⚠️是':'否'}</td><td>${p.low_open_break?'⚠️是':'否'}</td>`;
+    else h+=`<td class="${cls(p.open_pct||0)}">${p.open_pct!=null?fmtPct(p.open_pct):'N/A'}</td><td class="${cls(p.now_pct||0)}">${p.now_pct!=null?fmtPct(p.now_pct):'N/A'}</td><td>${p.amount!=null?fmtAmt(p.amount):'N/A'}</td><td>${p.above_open?'是':'否'}</td>`;
+    h+='</tr>';});
+  tr.innerHTML=(res.title?('<div class="sub">'+res.title+'</div>'):'')+h+'</tbody></table>';
 }
 function updateHint(){
   const e=[...catalog.core,...catalog.advanced].find(x=>x.key===currentStrategy);
