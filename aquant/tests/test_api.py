@@ -40,6 +40,29 @@ def test_screen_run_unknown_strategy(client):
     assert "未实现" in r["error"]
 
 
+def test_forecast_run_success_for_known(client):
+    r = client.post("/api/forecast/run", json={"symbol": "600519"}).json()
+    assert r["success"] is True
+    assert r["symbol"] == "600519.SH"      # 自动补全交易所
+    assert r.get("name")
+    assert "forecast" in r
+
+
+def test_forecast_run_unknown_no_500(client):
+    resp = client.post("/api/forecast/run", json={"symbol": "不存在xyz"})
+    assert resp.status_code == 200          # 失败也不返回 500
+    body = resp.json()
+    assert body["success"] is False
+    assert body["error"] == "未找到该股票代码或名称。"
+
+
+def test_normalize_symbol():
+    from aqs import service
+    assert service.normalize_symbol("600519") == "600519.SH"
+    assert service.normalize_symbol("300167") == "300167.SZ"
+    assert service.normalize_symbol("000001") == "000001.SZ"
+
+
 def test_strategies_catalog_not_empty(client):
     cat = client.get("/api/strategies/catalog").json()
     assert [e["key"] for e in cat["core"]] == ["short_strength", "trend_quality", "quality_value"]

@@ -122,6 +122,42 @@ def create_app() -> "FastAPI":
     def forecast(symbol: str = Query(...), horizon: int = 5) -> Dict[str, Any]:
         return service.forecast_symbol(symbol, horizon=horizon)
 
+    @app.post("/api/forecast/run")
+    def forecast_run(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """运行走势分析与预测（前端「分析并预测」按钮调用）。"""
+        import datetime as _dt
+
+        payload = payload or {}
+        raw = str(payload.get("symbol", "")).strip()
+        if not raw:
+            return {"success": False, "error": "请输入股票代码或名称。"}
+        resolved = service.normalize_symbol(raw)
+        if not resolved:
+            return {"success": False, "error": "未找到该股票代码或名称。"}
+        try:
+            res = service.forecast_symbol(resolved, horizon=int(payload.get("horizon", 5)))
+        except Exception as exc:  # noqa: BLE001
+            return {"success": False, "error": f"分析失败：{type(exc).__name__}: {exc}"}
+        if res.get("error"):
+            err = res["error"]
+            if "未找到" in err:
+                err = "未找到该股票代码或名称。"
+            elif "取数失败" in err or "无法获取" in err:
+                err = "数据源取数失败，请检查 Baostock/AkShare。"
+            return {"success": False, "error": err, "symbol": resolved}
+
+        now = _dt.datetime.now()
+        trading = now.weekday() < 5 and (9 * 60 + 30) <= (now.hour * 60 + now.minute) <= (15 * 60)
+        note = "" if trading else "当前为非交易时间，使用最近一个交易日数据。"
+        return {
+            "success": True,
+            "symbol": resolved,
+            "name": res.get("name", ""),
+            "latest_trade_date": (res.get("data") or {}).get("latest_data_date"),
+            "note": note,
+            "forecast": res,
+        }
+
     @app.get("/api/stocks/search")
     def stocks_search(q: str = "", limit: int = 20) -> List[dict]:
         return service.search_stocks(q, limit=limit)

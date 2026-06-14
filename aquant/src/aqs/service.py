@@ -519,6 +519,18 @@ def remove_from_watchlist(symbol: str) -> dict:
     return directory.remove_watchlist(symbol)
 
 
+def normalize_symbol(text: str) -> Optional[str]:
+    """把代码片段或中文名称标准化为带交易所后缀的代码（找不到返回 None）。
+
+    - '600519.SH' / '300750.SZ' → 原样
+    - 6 开头 6 位 → .SH；0/3 开头 → .SZ；8/4 开头 → .BJ
+    - 中文名称 → 从全市场目录搜索匹配
+    """
+    from aqs.data import directory
+
+    return directory.resolve(text)
+
+
 def forecast_symbol(symbol: str, horizon: int = 5, config: SystemConfig = DEFAULT_CONFIG) -> Dict[str, Any]:
     from aqs.ml.forecast import analyze_and_forecast
     from aqs.data import directory
@@ -528,11 +540,21 @@ def forecast_symbol(symbol: str, horizon: int = 5, config: SystemConfig = DEFAUL
     if not resolved:
         return {"symbol": symbol, "error": "未找到该股票代码或名称"}
 
-    mdm = _manager_for_symbol(resolved, config)
+    try:
+        mdm = _manager_for_symbol(resolved, config)
+    except Exception as exc:  # noqa: BLE001
+        return {"symbol": resolved, "error": f"数据源取数失败，请检查 Baostock/AkShare：{exc}"}
     if mdm is None:
-        return {"symbol": resolved, "error": "无法获取该股票数据（示例数据模式仅支持内置标的，请切换到 Baostock/AkShare）"}
+        return {"symbol": resolved, "error": "数据源取数失败，请检查 Baostock/AkShare（示例数据模式仅支持内置标的）"}
 
-    res = analyze_and_forecast(mdm, resolved, horizon=horizon)
+    try:
+        res = analyze_and_forecast(mdm, resolved, horizon=horizon)
+    except Exception as exc:  # noqa: BLE001
+        return {"symbol": resolved, "error": f"分析失败：{type(exc).__name__}: {exc}"}
+    if not isinstance(res, dict):
+        return {"symbol": resolved, "error": "分析失败：无结果"}
+    if res.get("error"):
+        return res
     # 补充名称
     inst = mdm.instrument(resolved)
     res["name"] = (inst.name if inst and inst.name else directory.name_of(resolved))

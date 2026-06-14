@@ -446,12 +446,17 @@ async function runForecast(){
   const timer=setInterval(()=>{si=Math.min(si+1,stages.length-1);el.innerHTML='<span class="sub">'+stages[si]+'</span>';},1500);
   log('预测：'+sym);
   try{
-    const r=await api('/api/forecast?symbol='+encodeURIComponent(sym),null,30000);
-    clearInterval(timer); renderForecast(r);
+    const r=await api('/api/forecast/run',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({symbol:sym})},30000);
+    clearInterval(timer);
+    if(r.success===false){el.innerHTML='<div class="neg" style="font-weight:600">'+(r.error||'分析失败')+'</div>';log('预测失败：'+r.error);return;}
+    if(r.symbol)document.getElementById('fcInput').value=r.symbol;   // 回填标准代码
+    renderForecast(r.forecast||r);
+    if(r.note) el.insertAdjacentHTML('afterbegin','<div class="warnbox">'+r.note+'</div>');
     log('预测完成，用时 '+((performance.now()-t0)/1000).toFixed(1)+' 秒');
   }catch(e){
     clearInterval(timer);
-    const msg=(e.name==='AbortError')?'分析超时，请检查数据源或更换股票。':('分析失败：'+e.message);
+    const msg=(e.name==='AbortError')?'分析超时，请稍后重试或检查数据源。':('分析失败：'+e.message);
     el.innerHTML='<div class="neg">'+msg+'</div>'; log(msg);
   }finally{ busy('fcBtn',false); fcRunning=false; }
 }
