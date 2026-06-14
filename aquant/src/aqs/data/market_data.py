@@ -74,6 +74,31 @@ class MarketDataManager:
         mgr.load_dataset(ds)
         return mgr
 
+    @classmethod
+    def from_ths(
+        cls,
+        symbols,
+        start: str,
+        end: str,
+        benchmark: str = "000300.SH",
+        with_fundamentals: bool = True,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        config: SystemConfig = DEFAULT_CONFIG,
+    ) -> "MarketDataManager":
+        """Build a manager from 同花顺 iFinD data (requires iFinD pro + API).
+
+        Credentials are read from ``THS_USERNAME`` / ``THS_PASSWORD`` env vars if
+        not passed explicitly. See :mod:`aqs.data.sources.ths`.
+        """
+        from aqs.data.sources.ths import THSDataSource
+
+        src = THSDataSource(username=username, password=password)
+        ds = src.build_dataset(list(symbols), start, end, benchmark=benchmark, with_fundamentals=with_fundamentals)
+        mgr = cls(config)
+        mgr.load_dataset(ds)
+        return mgr
+
     def load_dataset(self, ds: SampleDataset) -> None:
         self._instruments = dict(ds.instruments)
         self._bars = {s: clean_bars(df) for s, df in ds.bars.items()}

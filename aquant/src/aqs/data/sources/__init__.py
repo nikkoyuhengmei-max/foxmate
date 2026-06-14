@@ -9,12 +9,16 @@ Adapters that require a vendor terminal (e.g. Wind) must run on the machine wher
 that terminal is installed and logged in.
 """
 
-__all__ = ["WindDataSource"]
+__all__ = ["WindDataSource", "THSDataSource"]
 
 
-def __getattr__(name):  # lazy import so the package loads without WindPy
+def __getattr__(name):  # lazy import so the package loads without vendor SDKs
     if name == "WindDataSource":
         from aqs.data.sources.wind import WindDataSource
 
         return WindDataSource
+    if name == "THSDataSource":
+        from aqs.data.sources.ths import THSDataSource
+
+        return THSDataSource
     raise AttributeError(name)

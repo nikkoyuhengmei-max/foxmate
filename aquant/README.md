@@ -127,6 +127,24 @@ res = BacktestEngine(data, MultiFactor(top_n=4)).run()
 字段做成可配置，缺权限的字段会自动跳过并告警。完整示例见 `examples/load_wind_data.py`。
 实时行情订阅（需 wsq 权限）见 `WindDataSource.subscribe_realtime`。
 
+## 接入真实数据：同花顺 iFinD
+
+也提供 **同花顺 iFinD 适配器** `aqs/data/sources/ths.py`（基于 `iFinDPy`）。
+
+> 仅支持 **iFinD 专业数据终端 + 数据 API 权限**；普通免费版同花顺没有官方数据 API。
+> 账号用环境变量提供，不要写进代码：`export THS_USERNAME=...`，`export THS_PASSWORD=...`。
+
+```python
+from aqs.data.market_data import MarketDataManager
+data = MarketDataManager.from_ths(
+    symbols=["600519.SH", "300750.SZ", "688981.SH"],
+    start="2021-01-01", end="2023-12-31", benchmark="000300.SH",
+)
+```
+
+iFinD 的指标代码（`ths_*`）与参数串随版本/权限略有差异，已集中在 `ths.py` 顶部、可配置；
+缺权限的字段会自动跳过并告警。完整示例见 `examples/load_ths_data.py`。
+
 ## 设计要点（为什么回测可信）
 
 - **避免未来函数（look-ahead）**：`MarketDataManager` 内置时间点时钟（PIT），`get_price` 不会返回 `as_of` 之后的数据；
