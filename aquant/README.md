@@ -133,6 +133,42 @@ picks = Screener().screen(data, universe=universe, auction=auction, top_n=8)
 > 因子权重在 `ScreenConfig.weights` 可调。选股结果仅为量化参考，不构成投资建议。
 > 注：日线只能到上一收盘；要"过去 24 小时/分钟级"需接 iFinD 分钟(wsi)/实时数据，接上后即可扩展周期。
 
+## 接入真实数据：AkShare（免费、免注册，推荐个人用户）
+
+如果没有 Wind / iFinD 的数据 API 账号，用 **AkShare** 即可：开源免费、**无需账号**，
+`pip install akshare` 后联网即可取 A 股日线、实时快照、集合竞价、PE/PB、指数等。
+
+```python
+from aqs.data.market_data import MarketDataManager
+from aqs.research.screener import Screener
+
+data = MarketDataManager.from_akshare(
+    ["600519.SH", "600036.SH", "300750.SZ", "000333.SZ"],
+    start="2022-01-01", end="2023-12-31", benchmark="000300.SH",
+)
+print(Screener().screen(data, top_n=8))          # 选股
+```
+
+集合竞价/实时快照（近似）用于盘前选股：
+
+```python
+from aqs.data.sources.akshare_source import AkShareDataSource
+auction = AkShareDataSource().get_call_auction(universe)   # {代码: {gap, auction_vol_ratio}}
+picks = Screener().screen(data, universe=universe, auction=auction, top_n=8)
+```
+
+完整示例见 `examples/load_akshare_data.py`。
+
+> 注意：AkShare 抓取的是公开数据站点（东方财富/新浪/百度股市通），**建议在中国大陆网络下使用**；
+> 海外/被限流的 IP 可能频繁断连。价格默认前复权（`adjust="qfq"`，可改 `hfq`/`""`）。
+
+### 其它免费/低成本选择
+- **Baostock**：免费免注册（日线/分钟/复权因子，无实时）。
+- **Tushare**：免费注册取 token，部分接口需积分。
+- **券商 miniQMT（xtquant）**：开普通证券账户即可，免数据费，**行情 + 实盘下单**一体（以后做实盘最划算）。
+
+> 需要我加 Baostock / Tushare / miniQMT 适配器，告诉我即可（接口与 AkShare 同构，接上即用）。
+
 ## 接入真实数据：Wind（万得）
 
 系统内置合成示例数据用于演示；接入真实行情只需一个数据源适配器。已提供 **Wind 适配器** `aqs/data/sources/wind.py`。

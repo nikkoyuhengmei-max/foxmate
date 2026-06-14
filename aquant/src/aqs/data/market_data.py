@@ -99,6 +99,30 @@ class MarketDataManager:
         mgr.load_dataset(ds)
         return mgr
 
+    @classmethod
+    def from_akshare(
+        cls,
+        symbols,
+        start: str,
+        end: str,
+        benchmark: str = "000300.SH",
+        adjust: str = "qfq",
+        with_fundamentals: bool = True,
+        config: SystemConfig = DEFAULT_CONFIG,
+    ) -> "MarketDataManager":
+        """Build a manager from free AkShare data (no account needed).
+
+        Requires ``pip install akshare`` and internet access. See
+        :mod:`aqs.data.sources.akshare_source`.
+        """
+        from aqs.data.sources.akshare_source import AkShareDataSource
+
+        src = AkShareDataSource()
+        ds = src.build_dataset(list(symbols), start, end, benchmark=benchmark, adjust=adjust, with_fundamentals=with_fundamentals)
+        mgr = cls(config)
+        mgr.load_dataset(ds)
+        return mgr
+
     def load_dataset(self, ds: SampleDataset) -> None:
         self._instruments = dict(ds.instruments)
         self._bars = {s: clean_bars(df) for s, df in ds.bars.items()}
@@ -176,8 +200,20 @@ class MarketDataManager:
             return inst.is_active
         return pd.Timestamp(when) < pd.Timestamp(inst.delist_date)
 
+    def _session_index(self) -> pd.DatetimeIndex:
+        """Master session list: benchmark index, or union of all bar indices
+        when no benchmark is available (e.g. the data source failed to fetch it)."""
+        if len(self._benchmark):
+            return pd.DatetimeIndex(self._benchmark.index)
+        if not self._bars:
+            return pd.DatetimeIndex([])
+        union = None
+        for df in self._bars.values():
+            union = df.index if union is None else union.union(df.index)
+        return pd.DatetimeIndex(union if union is not None else [])
+
     def trading_dates(self, start=None, end=None) -> pd.DatetimeIndex:
-        idx = self._benchmark.index
+        idx = self._session_index()
         if start is not None:
             idx = idx[idx >= pd.Timestamp(start)]
         if end is not None:
