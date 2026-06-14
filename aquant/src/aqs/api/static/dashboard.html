@@ -72,67 +72,67 @@
       </label>
       <label class="sub"><input type="checkbox" id="advToggle" onchange="toggleAdv()"> 高级/实验策略</label>
       <select id="advStrategy" class="hidden" onchange="useAdv()"></select>
-      <label>数量 <input id="topN" type="number" value="20" min="5" max="100" style="width:70px"></label>
+      <label>股票池
+        <select id="universe" onchange="runScreen()">
+          <option value="">默认/全A池</option>
+          <option value="hs300">沪深300</option>
+          <option value="watchlist">自选股</option>
+        </select>
+      </label>
+      <label>数量 <input id="topN" type="number" value="10" min="5" max="100" style="width:70px"></label>
       <button onclick="runScreen()">运行选股</button>
-      <button class="secondary" onclick="runBacktest()">查看策略历史表现</button>
       <span id="msg" class="sub"></span>
     </div>
     <div class="sub" id="stratHint" style="margin-top:8px"></div>
   </div>
 
-  <div class="tabs">
-    <div class="tab active" id="tab-work" onclick="switchTab('work')">选股工作台</div>
-    <div class="tab" id="tab-perf" onclick="switchTab('perf')">策略历史表现</div>
-  </div>
-
-  <!-- C+D. 选股工作台 -->
-  <div id="view-work">
-    <div class="card">
-      <h3>策略筛选结果 <span class="tag" id="screenMeta"></span></h3>
-      <div class="scroll" id="screen"><div class="empty">选择策略后点击「运行选股」</div></div>
-    </div>
-    <div class="two">
-      <div class="card">
-        <h3>个股详情 / 选中解读</h3>
-        <div id="detail" class="empty">点击某只股票的「查看详情」</div>
-      </div>
-      <div class="card">
-        <h3>AI 走势分析 / 预测 <span class="tag">全 A 股可搜</span></h3>
-        <div class="controls" style="margin-bottom:8px">
-          <input id="fcInput" list="stockSug" placeholder="输入代码或名称，如 600519.SH / 贵州茅台"
-                 style="flex:1;min-width:200px" oninput="onSearchInput()" onkeydown="if(event.key==='Enter')runForecast()">
-          <datalist id="stockSug"></datalist>
-        </div>
-        <div class="controls" style="margin-bottom:10px">
-          <select id="fcQuick" onchange="quickSelect()" style="flex:1;min-width:160px"><option value="">常用/最近筛选/自选股…</option></select>
-          <button onclick="runForecast()">分析并预测</button>
-          <button class="secondary" onclick="addWatch()">加入自选</button>
-        </div>
-        <div id="forecast" class="sub">输入代码或名称后点击「分析并预测」。预测仅供研究参考，不构成投资建议。</div>
-      </div>
-    </div>
+  <!-- C. 今日策略筛选结果 -->
+  <div class="card">
+    <h3 id="screenTitle">今日策略筛选结果 Top 10 <span class="tag" id="screenMeta"></span></h3>
+    <div class="scroll" id="screen"><div class="empty">选择策略后点击「运行选股」</div></div>
   </div>
 
   <!-- E. 策略历史表现 -->
-  <div id="view-perf" class="hidden">
-    <div class="card">
-      <h3>策略历史表现 (回测)</h3>
-      <div class="sub" id="btSettings" style="margin-bottom:10px">运行回测后显示</div>
-      <div class="kpis" id="kpis"></div>
-      <div class="two">
-        <div>
-          <div class="legend"><i style="background:#2f81f7"></i>策略净值　<i style="background:#8b949e"></i>基准净值</div>
-          <canvas id="equity"></canvas>
-        </div>
-        <div>
-          <div class="legend"><i style="background:#f85149"></i>回撤曲线 (策略)</div>
-          <canvas id="drawdown"></canvas>
-        </div>
+  <div class="card">
+    <h3>策略历史表现</h3>
+    <div class="sub" id="btSettings" style="margin-bottom:10px">运行选股后自动加载…</div>
+    <div class="kpis" id="kpis"></div>
+    <div class="two">
+      <div>
+        <div class="legend"><i style="background:#2f81f7"></i>策略净值　<i style="background:#8b949e"></i>基准净值</div>
+        <canvas id="equity"></canvas>
+      </div>
+      <div>
+        <div class="legend"><i style="background:#f85149"></i>回撤曲线 (策略)</div>
+        <canvas id="drawdown"></canvas>
       </div>
     </div>
-    <div class="two">
-      <div class="card"><h3>月度收益热力图</h3><div class="scroll" id="heatmap"></div></div>
-      <div class="card"><h3>风控 & 合规</h3><div id="riskCompliance"></div></div>
+  </div>
+
+  <div class="two">
+    <div class="card"><h3>月度收益热力图</h3><div class="scroll" id="heatmap"></div></div>
+    <div class="card"><h3>风控 & 合规</h3><div id="riskCompliance"></div></div>
+  </div>
+
+  <!-- D. 个股详情 / AI 预测 -->
+  <div class="two">
+    <div class="card">
+      <h3>个股详情 / 选中解读</h3>
+      <div id="detail" class="empty">点击某只股票的「详情」</div>
+    </div>
+    <div class="card">
+      <h3>AI 走势分析 / 预测 <span class="tag">全 A 股可搜</span></h3>
+      <div class="controls" style="margin-bottom:8px">
+        <input id="fcInput" list="stockSug" placeholder="输入代码或名称，如 600519.SH / 贵州茅台"
+               style="flex:1;min-width:200px" oninput="onSearchInput()" onkeydown="if(event.key==='Enter')runForecast()">
+        <datalist id="stockSug"></datalist>
+      </div>
+      <div class="controls" style="margin-bottom:10px">
+        <select id="fcQuick" onchange="quickSelect()" style="flex:1;min-width:160px"><option value="">常用/最近筛选/自选股…</option></select>
+        <button onclick="runForecast()">分析并预测</button>
+        <button class="secondary" onclick="addWatch()">加入自选</button>
+      </div>
+      <div id="forecast" class="sub">输入代码或名称后点击「分析并预测」。预测仅供研究参考，不构成投资建议。</div>
     </div>
   </div>
 
@@ -181,13 +181,6 @@ function onStrategyChange(){ currentStrategy=document.getElementById('strategy')
 function toggleAdv(){ document.getElementById('advStrategy').classList.toggle('hidden',!document.getElementById('advToggle').checked); }
 function useAdv(){ currentStrategy=document.getElementById('advStrategy').value; updateHint(); }
 
-function switchTab(t){
-  document.getElementById('tab-work').classList.toggle('active',t==='work');
-  document.getElementById('tab-perf').classList.toggle('active',t==='perf');
-  document.getElementById('view-work').classList.toggle('hidden',t!=='work');
-  document.getElementById('view-perf').classList.toggle('hidden',t!=='perf');
-}
-
 async function loadStatus(){
   const s=await api('/api/status'); const real=s.is_real_data;
   const pill=real?'<span class="pill real">真实数据</span>':'<span class="pill mock">示例数据(mock)</span>';
@@ -208,22 +201,25 @@ async function loadStatus(){
 }
 
 async function runScreen(){
-  const top=document.getElementById('topN').value||20;
-  document.getElementById('screen').innerHTML='<div class="empty">选股中…</div>';
-  log('运行选股：'+currentStrategy+' Top'+top);
-  const res=await api(`/api/screen?strategy=${currentStrategy}&top_n=${top}`);
+  const top=document.getElementById('topN').value||10;
+  const uni=document.getElementById('universe').value;
+  document.getElementById('screen').innerHTML='<div class="empty">选股中…'+(uni?'（加载股票池，首次较慢）':'')+'</div>';
+  document.getElementById('screenTitle').firstChild.nodeValue=`今日策略筛选结果 Top ${top} `;
+  log('运行选股：'+currentStrategy+' Top'+top+(uni?(' 股票池='+uni):''));
+  const res=await api(`/api/screen?strategy=${currentStrategy}&top_n=${top}&universe=${encodeURIComponent(uni)}`);
   renderScreen(res); await loadStatus();
+  runBacktest();   // 选股后自动加载该策略历史表现
 }
 function sigClass(s){return s==='买入候选'?'sig-buy':s==='观察'?'sig-obs':'sig-ex';}
 function renderScreen(res){
   const picks=res.picks||[]; lastScreenPicks=picks; rebuildQuick();
   document.getElementById('screenMeta').textContent=`${res.strategy_name||''} · asof ${res.asof||'-'} · ${res.is_real_data?'真实数据':'示例数据'}`;
   if(!picks.length){document.getElementById('screen').innerHTML='<div class="empty">无结果</div>';return;}
-  let h='<table><thead><tr><th>#</th><th class="lft">代码</th><th class="lft">名称</th><th class="lft">行业</th><th>最新价</th><th>5日</th><th>20日</th><th>60日</th><th>成交额</th><th>RSI</th><th>评分</th><th class="lft">信号</th><th class="lft">选中原因</th><th class="lft">风险提示</th><th class="lft">操作</th></tr></thead><tbody>';
+  let h='<table><thead><tr><th>排名</th><th class="lft">股票</th><th class="lft">代码</th><th class="lft">行业</th><th>最新价</th><th>5日涨幅</th><th>20日涨幅</th><th>成交额</th><th>RSI</th><th>综合评分</th><th class="lft">信号</th><th class="lft">原因</th><th class="lft">风险</th><th class="lft">操作</th></tr></thead><tbody>';
   picks.forEach(p=>{ h+=`<tr>
-    <td>${p.rank}</td><td class="lft">${p.symbol}</td><td class="lft">${p.name||''}</td><td class="lft">${p.industry||'未分类'}</td>
+    <td>${p.rank}</td><td class="lft">${p.name||''}</td><td class="lft">${p.symbol}</td><td class="lft">${p.industry||'未分类'}</td>
     <td>${p.close}</td><td class="${cls(p.ret_5d||0)}">${fmtPct(p.ret_5d||0)}</td>
-    <td class="${cls(p.ret_20d||0)}">${fmtPct(p.ret_20d||0)}</td><td class="${cls(p.ret_60d||0)}">${fmtPct(p.ret_60d||0)}</td>
+    <td class="${cls(p.ret_20d||0)}">${fmtPct(p.ret_20d||0)}</td>
     <td>${fmtAmt(p.amount)}</td><td>${(p.rsi||0).toFixed(0)}</td><td>${(p.score||0).toFixed(2)}</td>
     <td class="lft ${sigClass(p.signal)}">${p.signal||''}</td>
     <td class="lft reason">${p.reason||''}</td><td class="lft reason">${p.risk||''}</td>
@@ -237,8 +233,8 @@ function renderScreen(res){
 }
 
 async function viewDetail(sym){
-  switchTab('work');
   const el=document.getElementById('detail'); el.innerHTML='<div class="empty">加载中…</div>';
+  el.scrollIntoView({behavior:'smooth', block:'nearest'});
   const d=await api(`/api/stock/detail?symbol=${encodeURIComponent(sym)}&strategy=${currentStrategy}`);
   if(d.error){el.innerHTML='<div class="neg">'+d.error+'</div>';return;}
   const f=d.factors||{};
@@ -261,13 +257,12 @@ async function viewDetail(sym){
   log('查看详情：'+sym);
 }
 
-function forecastSym(s){document.getElementById('fcInput').value=s; switchTab('work'); runForecast();}
+function forecastSym(s){document.getElementById('fcInput').value=s; document.getElementById('forecast').scrollIntoView({behavior:'smooth',block:'nearest'}); runForecast();}
 async function addWatchSym(s){const r=await api('/api/watchlist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:s})});log('加入自选 '+s+'：'+(r.message||''));loadWatchlist();}
 function addPaper(s){ log('已加入模拟交易候选：'+s+'（运行 `aquant paper` 执行模拟交易，成交后在“最近成交”显示）'); }
 
 async function runBacktest(){
-  switchTab('perf');
-  const msg=document.getElementById('msg');msg.textContent='回测运行中…';log('回测：'+currentStrategy);
+  const msg=document.getElementById('msg');msg.textContent='加载策略历史表现…';log('回测：'+currentStrategy);
   const res=await api('/api/backtest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({strategy:currentStrategy})});
   msg.textContent='回测完成';
   const s=res.settings||{};

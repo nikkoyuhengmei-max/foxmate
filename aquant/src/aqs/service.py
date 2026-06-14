@@ -93,12 +93,17 @@ _UNIVERSE_CACHE: Dict[str, List[str]] = {}
 
 
 def resolve_universe(universe) -> List[str]:
-    """把 universe（列表 / 'hs300' / 'zz500' / 'sz50' / 'custom'）解析为代码列表。"""
+    """把 universe（列表 / 'hs300' / 'zz500' / 'sz50' / 'watchlist' / 'custom'）解析为代码列表。"""
     if isinstance(universe, (list, tuple)):
         return list(universe)
-    if not universe or universe in ("custom", "default"):
+    if not universe or universe in ("custom", "default", "all"):
         return list(DATA_CFG["symbols"])
     name = str(universe).lower()
+    if name == "watchlist":
+        from aqs.data import directory
+
+        syms = [r["symbol"] for r in directory.watchlist()]
+        return syms or list(DATA_CFG["symbols"])
     if name in ("hs300", "zz500", "sz50"):
         if name in _UNIVERSE_CACHE:
             return _UNIVERSE_CACHE[name]
@@ -112,6 +117,27 @@ def resolve_universe(universe) -> List[str]:
         except Exception as exc:  # noqa: BLE001
             print(f"[universe] 获取 {name} 成分失败，使用默认股票池：{exc}")
     return list(DATA_CFG["symbols"])
+
+
+def _manager_for_universe(syms: List[str], config: SystemConfig):
+    """返回覆盖 ``syms`` 的数据管理器（不在当前池的标的按数据源临时拉取，缓存复用）。"""
+    mdm = get_data_manager(config)
+    missing = [s for s in syms if s not in mdm.symbols]
+    if not missing:
+        return mdm, [s for s in syms if s in mdm.symbols]
+    src = DATA_CFG["source"]
+    if src not in ("baostock", "akshare"):
+        return mdm, [s for s in syms if s in mdm.symbols]
+    try:
+        common = dict(symbols=syms, start=DATA_CFG["start"], end=DATA_CFG["end"],
+                      benchmark=DATA_CFG["benchmark"], cache_dir=DATA_CFG["cache_dir"],
+                      refresh=False, config=config)
+        m = MarketDataManager.from_baostock(**common) if src == "baostock" else MarketDataManager.from_akshare(**common)
+        got = [s for s in syms if s in m.symbols]
+        return (m, got) if got else (mdm, [s for s in syms if s in mdm.symbols])
+    except Exception as exc:  # noqa: BLE001
+        print(f"[universe] 加载股票池失败，退回当前池：{exc}")
+        return mdm, [s for s in syms if s in mdm.symbols]
 
 
 def get_data_manager(config: SystemConfig = DEFAULT_CONFIG, refresh: bool = False) -> MarketDataManager:
@@ -601,9 +627,11 @@ def screen_stocks(
     """按所选策略画像筛选 Top N 候选股（含信号/选中原因/风险提示）。"""
     from aqs.research.screener import Screener, ScreenConfig, PROFILES
 
-    mdm = get_data_manager(config)
-    syms = resolve_universe(universe) if universe is not None else list(mdm.symbols)
-    syms = [s for s in syms if s in mdm.symbols]
+    if universe is not None and str(universe) not in ("", "default", "all"):
+        mdm, syms = _manager_for_universe(resolve_universe(universe), config)
+    else:
+        mdm = get_data_manager(config)
+        syms = list(mdm.symbols)
 
     cfg = ScreenConfig(exclude_st=exclude_st, min_amount=min_amount)
     profile = strategy if strategy in PROFILES else "short_momentum"
