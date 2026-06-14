@@ -234,6 +234,30 @@ class THSDataSource:
             calendar=cal,
         )
 
+    def get_call_auction(self, symbols: Sequence[str]) -> Dict[str, Dict[str, float]]:
+        """获取开盘集合竞价快照，供选股器使用（实验性，需实时/竞价权限）。
+
+        返回 {symbol: {"gap": 竞价相对昨收涨跌幅, "auction_vol_ratio": 竞价量比}}。
+        说明：不同 iFinD 版本的实时/竞价指标名可能不同（如 open / preClose / 竞价量 等），
+        若字段报错把报错发我，我据你的权限调整。
+        """
+        out: Dict[str, Dict[str, float]] = {}
+        for sym in symbols:
+            try:
+                res = self.ths.THS_RealtimeQuotes(sym, "open,preClose,openVolume", "")
+                df = self._to_df(res)
+                if df.empty:
+                    continue
+                r = df.iloc[0]
+                op = float(r.get("open", np.nan))
+                prev = float(r.get("preClose", np.nan))
+                openvol = float(r.get("openVolume", np.nan))
+                gap = (op / prev - 1.0) if prev else np.nan
+                out[sym] = {"gap": gap, "auction_vol_ratio": openvol}
+            except Exception as exc:
+                print(f"[THS] 竞价快照跳过 {sym}: {exc}")
+        return out
+
     def logout(self) -> None:
         try:
             self.ths.THS_iFinDLogout()

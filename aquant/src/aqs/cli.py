@@ -91,6 +91,20 @@ def cmd_paper(args) -> int:
     return 0
 
 
+def cmd_screen(args) -> int:
+    res = service.screen_stocks(top_n=args.top, asof=args.asof)
+    print(f"\n选股结果 (asof={res['asof']}, Top {res['top_n']}):")
+    print("-" * 78)
+    print(f"{'代码':<11}{'名称':<8}{'行业':<8}{'综合分':>8}{'5日':>8}{'20日':>8}{'120日':>8}{'RSI':>6}")
+    for p in res["picks"]:
+        print(f"{p.get('symbol',''):<11}{str(p.get('name','')):<8}{str(p.get('industry','')):<8}"
+              f"{p.get('score',0):>8.2f}{p.get('ret_5d',0)*100:>7.1f}%{p.get('ret_20d',0)*100:>7.1f}%"
+              f"{p.get('ret_120d',0)*100:>7.1f}%{p.get('rsi',0):>6.0f}")
+    print("-" * 78)
+    print(res["disclaimer"])
+    return 0
+
+
 def cmd_forecast(args) -> int:
     res = service.forecast_symbol(args.symbol, horizon=args.horizon)
     print(json.dumps(res, ensure_ascii=False, indent=2))
@@ -128,6 +142,11 @@ def build_parser() -> argparse.ArgumentParser:
     pa.add_argument("--strategy", default="double_ma")
     pa.add_argument("--params"); pa.add_argument("--start"); pa.add_argument("--end")
     pa.set_defaults(func=cmd_paper)
+
+    sc = sub.add_parser("screen", help="快速筛选 Top N 候选股")
+    sc.add_argument("--top", type=int, default=8)
+    sc.add_argument("--asof", help="筛选时点 (YYYY-MM-DD)，默认最新")
+    sc.set_defaults(func=cmd_screen)
 
     fc = sub.add_parser("forecast", help="走势分析与预测")
     fc.add_argument("--symbol", required=True)

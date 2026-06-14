@@ -136,6 +136,26 @@ def forecast_symbol(symbol: str, horizon: int = 5, config: SystemConfig = DEFAUL
     return analyze_and_forecast(mdm, symbol, horizon=horizon)
 
 
+def screen_stocks(
+    top_n: int = 8,
+    universe: Optional[List[str]] = None,
+    asof: Optional[str] = None,
+    auction: Optional[dict] = None,
+    config: SystemConfig = DEFAULT_CONFIG,
+) -> dict:
+    """快速筛选 Top N 候选股（多周期历史 + 量化指标 + 可选集合竞价）。"""
+    from aqs.research.screener import Screener
+
+    mdm = get_data_manager(config)
+    df = Screener().screen(mdm, universe=universe, asof=asof, top_n=top_n, auction=auction)
+    return {
+        "asof": asof or (str(mdm.benchmark().index[-1].date()) if len(mdm.benchmark()) else None),
+        "top_n": top_n,
+        "picks": df.reset_index().to_dict(orient="records") if not df.empty else [],
+        "disclaimer": "选股结果仅为量化参考，不构成投资建议；请结合风控与人工复核。",
+    }
+
+
 def data_quality(config: SystemConfig = DEFAULT_CONFIG) -> List[dict]:
     mdm = get_data_manager(config)
     return mdm.run_quality_checks().to_dict(orient="records")

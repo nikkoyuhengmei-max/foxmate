@@ -75,6 +75,10 @@ def create_app() -> "FastAPI":
     def forecast(symbol: str = Query(...), horizon: int = 5) -> Dict[str, Any]:
         return service.forecast_symbol(symbol, horizon=horizon)
 
+    @app.get("/api/screen")
+    def screen(top_n: int = 8, asof: Optional[str] = None) -> Dict[str, Any]:
+        return service.screen_stocks(top_n=top_n, asof=asof)
+
     return app
 
 

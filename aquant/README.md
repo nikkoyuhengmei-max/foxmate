@@ -102,6 +102,37 @@ class MyStrategy(Strategy):
 
 ---
 
+## 选股器 Screener（快速筛选 5–10 支候选股）
+
+结合**多周期历史**（1/3/5/20/120 半年/250 一年 日收益）+ **量化指标**（趋势排列、RSI、量比、波动率惩罚）
++ **（可选）集合竞价**（开盘竞价跳空、竞价量比），做横截面 z-score 加权打分，输出 Top N。
+
+```bash
+aquant screen --top 8            # 命令行选股（最新时点）
+aquant screen --top 8 --asof 2023-06-30   # 指定历史时点（PIT，不偷看未来）
+```
+
+```python
+from aqs.data.market_data import MarketDataManager
+from aqs.research.screener import Screener
+
+data = MarketDataManager.from_sample()           # 接入 iFinD: MarketDataManager.from_ths(...)
+picks = Screener().screen(data, top_n=8)         # 返回排序后的候选股 DataFrame
+```
+
+**接入 iFinD 后用集合竞价**（开盘前/开盘时取竞价快照再筛选）：
+
+```python
+from aqs.data.sources.ths import THSDataSource
+src = THSDataSource()
+auction = src.get_call_auction(universe)         # {代码: {gap 跳空, auction_vol_ratio 竞价量比}}
+data = MarketDataManager.from_ths(universe, "2023-01-01", "2023-12-31")
+picks = Screener().screen(data, universe=universe, auction=auction, top_n=8)
+```
+
+> 因子权重在 `ScreenConfig.weights` 可调。选股结果仅为量化参考，不构成投资建议。
+> 注：日线只能到上一收盘；要"过去 24 小时/分钟级"需接 iFinD 分钟(wsi)/实时数据，接上后即可扩展周期。
+
 ## 接入真实数据：Wind（万得）
 
 系统内置合成示例数据用于演示；接入真实行情只需一个数据源适配器。已提供 **Wind 适配器** `aqs/data/sources/wind.py`。
