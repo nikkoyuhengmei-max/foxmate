@@ -107,6 +107,14 @@ def create_app() -> "FastAPI":
     def stock_detail(symbol: str = Query(...), strategy: str = "short_strength") -> Dict[str, Any]:
         return service.stock_detail(symbol, strategy=strategy)
 
+    @app.get("/api/sentiment/symbol/{symbol}")
+    def sentiment_symbol(symbol: str) -> Dict[str, Any]:
+        return service.sentiment_for(symbol)
+
+    @app.get("/api/sentiment/top")
+    def sentiment_top(top_n: int = 20, universe: Optional[str] = None) -> Dict[str, Any]:
+        return service.sentiment_top(top_n=top_n, universe=universe)
+
     @app.get("/api/symbols")
     def symbols() -> List[dict]:
         return service.list_symbols()
@@ -208,6 +216,7 @@ def create_app() -> "FastAPI":
                 asof=payload.get("asof"),
                 exclude_slow_blue_chip=bool(payload.get("exclude_large_cap", payload.get("exclude_slow_blue_chip", True))),
                 use_cache=bool(payload.get("use_cache", True)),
+                use_sentiment=bool(payload.get("use_sentiment", False)),
             )
             if not res.get("picks"):
                 return {"success": True, "strategy": res["strategy"], "strategy_name": res["strategy_name"],
@@ -222,6 +231,8 @@ def create_app() -> "FastAPI":
                 "asof_date": res["asof"],
                 "data_source": res["source"],
                 "is_real_data": res["is_real_data"],
+                "use_sentiment": res.get("use_sentiment", False),
+                "sentiment_meta": res.get("sentiment_meta"),
                 "elapsed_seconds": round(time.time() - t0, 2),
                 "results": res["picks"],
                 "disclaimer": res["disclaimer"],

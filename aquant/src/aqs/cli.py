@@ -116,6 +116,7 @@ def cmd_screen(args) -> int:
         exclude_slow_blue_chip=getattr(args, "exclude_slow_blue_chip", True),
         max_market_cap=getattr(args, "max_market_cap", 3000e8),
         use_cache=getattr(args, "use_cache", True),
+        use_sentiment=getattr(args, "use_sentiment", False),
         save=getattr(args, "save", False),
     )
     flag = "真实数据" if res.get("is_real_data") else "示例数据(回退)"
@@ -135,6 +136,37 @@ def cmd_screen(args) -> int:
         print(f"已导出: {res['saved']}")
     print(f"选股完成，用时 {_t.time()-t0:.1f} 秒")
     print(res["disclaimer"])
+    return 0
+
+
+def cmd_sentiment(args) -> int:
+    if getattr(args, "symbol", None):
+        res = service.sentiment_for(args.symbol)
+        if not res.get("available"):
+            print(f"{res.get('symbol')} {res.get('name','')}: {res.get('message','无舆情数据')}")
+        else:
+            s = res["sentiment"]
+            tag = "（示例舆情数据）" if res.get("is_mock") else ""
+            print(f"\n{res['symbol']} {res.get('name','')} 舆情{tag}:")
+            print(f"  关注度评分: {s.get('attention_score')}  热度排名: {s.get('hot_rank')}")
+            print(f"  情绪分数: {s.get('sentiment_score')}  正面/负面比例: {s.get('positive_ratio')}/{s.get('negative_ratio')}")
+            print(f"  新闻(1d/3d): {s.get('news_count_1d')}/{s.get('news_count_3d')}  讨论(1d): {s.get('mention_count_1d')}")
+            print(f"  风险词: {', '.join(s.get('risk_keywords') or []) or '无'}")
+            print(f"  正面词: {', '.join(s.get('positive_keywords') or []) or '无'}")
+        print(f"\n{res.get('disclaimer','')}")
+        return 0
+    res = service.sentiment_top(top_n=args.top)
+    if not res.get("available"):
+        print("暂无舆情数据（未接入真实舆情源；演示模式下可用示例舆情）。")
+        print(res.get("disclaimer", ""))
+        return 0
+    tag = "（示例舆情数据）" if res.get("is_mock") else ""
+    print(f"\n舆情热度 Top {res['top_n']}{tag}:")
+    print(f"{'#':<3}{'代码':<11}{'名称':<10}{'关注度':>7}{'情绪':>7}{'新闻1d':>7}  风险词")
+    for i, s in enumerate(res["results"], 1):
+        print(f"{i:<3}{s.get('symbol',''):<11}{str(s.get('name','')):<10}{s.get('attention_score',0):>7.1f}"
+              f"{s.get('sentiment_score',0):>7.2f}{int(s.get('news_count_1d') or 0):>7}  {', '.join(s.get('risk_keywords') or [])}")
+    print(f"\n{res.get('disclaimer','')}")
     return 0
 
 
@@ -247,8 +279,15 @@ def build_parser() -> argparse.ArgumentParser:
                     default=True, help="不排除超大市值慢速蓝筹")
     sc.add_argument("--use-cache", dest="use_cache", action="store_true", default=True, help="使用本地缓存(默认开)")
     sc.add_argument("--no-cache", dest="use_cache", action="store_false", help="忽略缓存重新取数")
+    sc.add_argument("--use-sentiment", dest="use_sentiment", action="store_true", default=False,
+                    help="加入舆情/关注度因子(辅助)")
     sc.add_argument("--save", action="store_true", help="导出结果到 outputs/")
     sc.set_defaults(func=cmd_screen)
+
+    se = sub.add_parser("sentiment", help="舆情/关注度因子", parents=[data])
+    se.add_argument("--symbol", help="查看单只股票舆情；不指定则看 Top")
+    se.add_argument("--top", type=int, default=20)
+    se.set_defaults(func=cmd_sentiment)
 
     tm = sub.add_parser("timing", help="短线选股时间模式", parents=[data])
     tm.add_argument("--mode", choices=["after_close", "auction_confirm", "open_confirm", "close_review"],

@@ -20,4 +20,5 @@ records/
 data/stocks.csv
 data/cache/
 data/watchlist.csv
+data/sentiment.csv
 .DS_Store

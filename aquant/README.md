@@ -231,6 +231,28 @@ picks = Screener().screen(data, universe=universe, auction=auction, top_n=8)
 > 因子权重在 `ScreenConfig.weights` 可调。选股结果仅为量化参考，不构成投资建议。
 > 注：日线只能到上一收盘；要"过去 24 小时/分钟级"需接 iFinD 分钟(wsi)/实时数据，接上后即可扩展周期。
 
+## 舆情 / 关注度因子（辅助 short_strength）
+
+把市场关注度、新闻热度、社交讨论度、关键词情绪转成量化评分，作为短线强势策略的**辅助因子**。
+
+```bash
+aquant sentiment --symbol 300750.SZ      # 单只舆情详情
+aquant sentiment --top 20                # 舆情热度榜
+aquant screen --strategy short_strength --top 20 --use-sentiment   # 选股叠加舆情
+```
+
+- 字段：`attention_score`(综合关注度) / `sentiment_score`(-1~1) / 新闻数(1d/3d) / 讨论数 / 关注度变化 / 风险关键词数 / `hot_rank`，
+  舆情信号：热度上升 / 情绪偏正面 / 过热谨慎 / 负面风险 / 关注度不足 / 数据缺失。
+- 关键词识别：风险词（监管/立案/问询函/减持/亏损/退市/ST/诉讼/造假/处罚…）与催化词（涨停/突破/订单/回购/增持/中标/机构调研…）。
+- 评分权重（开启舆情时）：价格动量25% + 量能20% + 趋势15% + 突破10% + **舆情15%** + 风控15%；
+  `attention_score` = 讨论热度30% + 新闻20% + 热度变化25% + 正面情绪15% − 风险词惩罚10%。
+- 数据源：可扩展 `SentimentProvider`（东方财富股吧/雪球/同花顺等预留接口）+ CSV 导入（`data/sentiment.csv`）。
+  **真实源未接入/抓取受限时显示 N/A 并降低该因子权重，绝不报错**；缓存于 `data/cache/sentiment/`。
+- **mock 舆情仅在演示模式可用**，并明确标注「示例舆情数据」，不会被真实模式读取（缓存按数据源隔离）。
+- 接口：`GET /api/sentiment/symbol/{symbol}`、`GET /api/sentiment/top`、`POST /api/screen/run` 支持 `{"use_sentiment": true}`。
+
+> ⚠️ 舆情只是辅助因子，不能单独作为买入依据；**舆情热度不等于投资价值**。
+
 ## 短线选股时间模式（研究/模拟，不下真实单）
 
 按交易时段提供 4 个模式（`aquant timing` 查看当前建议；仪表盘顶部也会显示）：

@@ -61,6 +61,8 @@ DATA_CFG: Dict[str, Any] = {
     "refresh": False,
     # 演示模式：仅当显式开启才允许使用 mock/示例数据
     "demo_mode": os.getenv("AQUANT_DEMO", "").lower() in ("1", "true", "yes"),
+    # 舆情数据源：auto(CSV→真实→演示mock) | csv | mock | none
+    "sentiment_source": os.getenv("AQUANT_SENTIMENT_SOURCE", "auto"),
 }
 
 
@@ -597,6 +599,43 @@ def remove_from_watchlist(symbol: str) -> dict:
     return directory.remove_watchlist(symbol)
 
 
+def _sentiment_records(symbols, names=None, asof=None, use_cache: bool = True):
+    """获取一组股票的舆情记录 (records, meta)。"""
+    from aqs.sentiment.engine import SentimentEngine
+
+    eng = SentimentEngine(source=DATA_CFG.get("sentiment_source", "auto"),
+                          demo_mode=bool(DATA_CFG.get("demo_mode")))
+    return eng.get_sentiment(list(symbols), names=names or {}, asof=asof, use_cache=use_cache)
+
+
+def sentiment_for(symbol: str, config: SystemConfig = DEFAULT_CONFIG) -> Dict[str, Any]:
+    """单只股票舆情详情。"""
+    from aqs.data import directory
+
+    resolved = directory.resolve(symbol) or symbol
+    name = directory.name_of(resolved)
+    records, meta = _sentiment_records([resolved], names={resolved: name})
+    rec = records.get(resolved)
+    if not rec:
+        return {"symbol": resolved, "name": name, "available": False, "meta": meta,
+                "message": "暂无舆情数据（未接入真实舆情源；演示模式下可用示例舆情）。",
+                "disclaimer": meta.get("disclaimer", "")}
+    return {"symbol": resolved, "name": name or rec.get("name", ""), "available": True,
+            "is_mock": bool(rec.get("is_mock")), "meta": meta, "sentiment": rec,
+            "disclaimer": meta.get("disclaimer", "")}
+
+
+def sentiment_top(top_n: int = 20, universe=None, config: SystemConfig = DEFAULT_CONFIG) -> Dict[str, Any]:
+    """按关注度排序的热门股。"""
+    mdm = get_data_manager(config)
+    syms = resolve_universe(universe) if universe is not None and str(universe) not in ("", "default") else list(mdm.symbols)
+    names = {s: (mdm.instrument(s).name if mdm.instrument(s) else "") for s in syms}
+    records, meta = _sentiment_records(syms, names=names)
+    rows = sorted(records.values(), key=lambda r: r.get("attention_score", 0), reverse=True)[:top_n]
+    return {"top_n": top_n, "available": bool(rows), "is_mock": bool(meta.get("is_mock")),
+            "meta": meta, "results": rows, "disclaimer": meta.get("disclaimer", "")}
+
+
 def normalize_symbol(text: str) -> Optional[str]:
     """把代码片段或中文名称标准化为带交易所后缀的代码（找不到返回 None）。
 
@@ -939,6 +978,7 @@ def stock_detail(symbol: str, strategy: str = "short_strength", config: SystemCo
     factors = {k: row.get(k) for k in
                ["ret_5d", "ret_20d", "ret_60d", "vol_ratio", "rsi", "volatility",
                 "max_drawdown", "pe", "pb", "roe"] if k in row}
+    sent = sentiment_for(resolved, config=config)
     return {
         "symbol": resolved,
         "name": (inst.name if inst and inst.name else directory.name_of(resolved)),
@@ -954,7 +994,8 @@ def stock_detail(symbol: str, strategy: str = "short_strength", config: SystemCo
         "amount": row.get("amount"),
         "factors": {k: (round(float(v), 4) if v is not None and pd.notna(v) else None) for k, v in factors.items()},
         "trend": [{"date": str(i.date()), "close": round(float(v), 2)} for i, v in trend.items()],
-        "disclaimer": "以上为量化解读，不构成投资建议。",
+        "sentiment": sent,
+        "disclaimer": "以上为量化解读，不构成投资建议；舆情为辅助因子，舆情热度不等于投资价值。",
     }
 
 
@@ -987,6 +1028,7 @@ def screen_stocks(
     exclude_slow_blue_chip: bool = True,
     max_market_cap: float = 3000e8,
     use_cache: bool = True,
+    use_sentiment: bool = False,
     auction: Optional[dict] = None,
     save: bool = False,
     config: SystemConfig = DEFAULT_CONFIG,
@@ -1010,8 +1052,16 @@ def screen_stocks(
                                         max_market_cap=max_market_cap)
         if exclude_slow_blue_chip:
             market_caps = _get_market_caps(syms)
+
+    sentiment = None
+    sent_meta = None
+    if use_sentiment:
+        names = {s: (mdm.instrument(s).name if mdm.instrument(s) else "") for s in syms}
+        sentiment, sent_meta = _sentiment_records(syms, names=names, asof=asof, use_cache=use_cache)
+
     df = Screener(cfg, profile=prof_obj).screen(
-        mdm, universe=syms or None, asof=asof, top_n=top_n, auction=auction, market_caps=market_caps)
+        mdm, universe=syms or None, asof=asof, top_n=top_n, auction=auction,
+        market_caps=market_caps, sentiment=sentiment)
 
     sessions = mdm.trading_dates(end=asof) if asof else mdm.trading_dates()
     asof_date = asof or (str(sessions[-1].date()) if len(sessions) else None)
@@ -1025,10 +1075,13 @@ def screen_stocks(
         "universe": universe if isinstance(universe, str) else (f"custom({len(syms)})" if universe else "default"),
         "min_amount": min_amount,
         "exclude_st": exclude_st,
+        "use_sentiment": bool(use_sentiment),
+        "sentiment_meta": sent_meta,
         "is_real_data": bool(_ACTUAL["is_real"]),
         "source": active_source(),
         "picks": picks,
-        "disclaimer": "选股结果仅为量化参考，不构成投资建议；请结合风控与人工复核。",
+        "disclaimer": "选股结果仅为量化参考，不构成投资建议；请结合风控与人工复核。"
+                       + ("　舆情为辅助因子，舆情热度不等于投资价值。" if use_sentiment else ""),
     }
     if save and not df.empty:
         d = _ensure_outputs()

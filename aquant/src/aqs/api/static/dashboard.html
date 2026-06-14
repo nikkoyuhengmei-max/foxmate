@@ -98,6 +98,7 @@
       </label>
       <label>数量 <input id="topN" type="number" value="20" min="5" max="100" style="width:70px"></label>
       <label class="sub"><input type="checkbox" id="exclBlue" checked onchange="runScreen()"> 排除超大市值慢速蓝筹</label>
+      <label class="sub"><input type="checkbox" id="useSent" onchange="runScreen()"> 舆情因子(辅助)</label>
       <button id="runScreenBtn" onclick="runScreen()">运行选股</button>
       <span id="msg" class="sub"></span>
     </div>
@@ -324,6 +325,7 @@ async function runScreen(){
   const top=document.getElementById('topN').value||20;
   const uni=document.getElementById('universe').value;
   const exb=document.getElementById('exclBlue').checked;
+  window.useSent=document.getElementById('useSent').checked;
   if(!currentStrategy){document.getElementById('screen').innerHTML='<div class="neg">策略为空，请选择策略</div>';screenRunning=false;return;}
   document.getElementById('screenTitle').firstChild.nodeValue=`今日${stratName()} Top ${top} `;
   document.querySelectorAll('button').forEach(b=>{}); busy('runScreenBtn',true,'运行中…');
@@ -335,7 +337,7 @@ async function runScreen(){
   log('运行选股：'+currentStrategy+' Top'+top+(uni?(' 股票池='+uni):'')+(exb?' 排除慢蓝筹':''));
   try{
     const res=await api('/api/screen/run',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({strategy:currentStrategy,top:Number(top),universe:uni,exclude_large_cap:exb,use_cache:true})},30000);
+      body:JSON.stringify({strategy:currentStrategy,top:Number(top),universe:uni,exclude_large_cap:exb,use_cache:true,use_sentiment:window.useSent})},30000);
     clearInterval(timer);
     if(res.success===false){sc.innerHTML='<div class="neg">运行失败：'+(res.error||'未知错误')+'</div>';log('选股失败：'+res.error);return;}
     // 适配 /api/screen/run 返回结构
@@ -352,17 +354,28 @@ async function runScreen(){
   }finally{ busy('runScreenBtn',false); screenRunning=false; }
 }
 function sigClass(s){return (s==='强势观察'||s==='买入候选')?'sig-buy':(s==='观察'||s==='回踩观察')?'sig-obs':(s==='过热谨慎')?'neg':'sig-ex';}
+function sentSigClass(s){return s==='负面风险'?'neg':(s==='过热谨慎')?'neg':(s==='热度上升'||s==='情绪偏正面')?'pos':'sig-ex';}
 function renderScreen(res){
   const picks=res.picks||[]; lastScreenPicks=picks; rebuildQuick();
-  document.getElementById('screenMeta').textContent=`${res.strategy_name||''} · asof ${res.asof||'-'} · ${res.is_real_data?'真实数据':'示例数据'}`;
+  const sent=!!window.useSent;
+  const sm=res.sentiment_meta;
+  let meta=`${res.strategy_name||''} · asof ${res.asof||'-'} · ${res.is_real_data?'真实数据':'示例数据'}`;
+  if(sent&&sm){ meta+=' · 舆情:'+(sm.is_mock?'<span class="pill mock">示例舆情数据</span>':(sm.available?sm.source:'无数据N/A')); }
+  document.getElementById('screenMeta').innerHTML=meta;
   if(!picks.length){document.getElementById('screen').innerHTML='<div class="empty">没有筛选出符合条件的股票，请降低筛选条件或扩大股票池。</div>';return;}
-  let h='<table><thead><tr><th>排名</th><th class="lft">名称</th><th class="lft">代码</th><th class="lft">行业</th><th>最新价</th><th>3日</th><th>5日</th><th>10日</th><th>量能放大</th><th>RSI</th><th>突破</th><th>综合评分</th><th class="lft">信号</th><th class="lft">原因</th><th class="lft">风险</th><th class="lft">操作</th></tr></thead><tbody>';
+  const sh = sent? '<th>舆情热度</th><th>热度变化</th><th>情绪</th><th>新闻</th><th>风险词</th><th class="lft">舆情信号</th>' : '';
+  let h='<table><thead><tr><th>排名</th><th class="lft">名称</th><th class="lft">代码</th><th class="lft">行业</th><th>最新价</th><th>3日</th><th>5日</th><th>10日</th><th>量能放大</th><th>RSI</th><th>突破</th>'+sh+'<th>综合评分</th><th class="lft">信号</th><th class="lft">原因</th><th class="lft">风险</th><th class="lft">操作</th></tr></thead><tbody>';
   picks.forEach(p=>{ const bo=p.breakout_20d?'<span class="pos">▲新高</span>':'—';
+    const na=v=>(v===null||v===undefined||(typeof v==='number'&&isNaN(v)))?'N/A':v;
+    const sc = sent? `<td>${na(p.attention_score)}</td><td class="${cls(p.attention_change_1d||0)}">${p.attention_change_1d!=null?fmtPct(p.attention_change_1d):'N/A'}</td>
+      <td class="${cls(p.sentiment_score||0)}">${na(p.sentiment_score)}</td><td>${na(p.news_count_1d!=null?Math.round(p.news_count_1d):null)}</td>
+      <td>${na(p.risk_keyword_count!=null?Math.round(p.risk_keyword_count):null)}</td>
+      <td class="lft ${sentSigClass(p.sent_signal)}">${p.sent_signal||'数据缺失'}</td>` : '';
     h+=`<tr>
     <td>${p.rank}</td><td class="lft">${p.name||''}</td><td class="lft">${p.symbol}</td><td class="lft">${p.industry||'未分类'}</td>
     <td>${p.close}</td><td class="${cls(p.ret_3d||0)}">${fmtPct(p.ret_3d||0)}</td><td class="${cls(p.ret_5d||0)}">${fmtPct(p.ret_5d||0)}</td>
     <td class="${cls(p.ret_10d||0)}">${fmtPct(p.ret_10d||0)}</td><td>${(p.amount_ratio||0).toFixed(1)}x</td>
-    <td>${(p.rsi||0).toFixed(0)}</td><td>${bo}</td><td>${(p.score||0).toFixed(2)}</td>
+    <td>${(p.rsi||0).toFixed(0)}</td><td>${bo}</td>${sc}<td>${(p.score||0).toFixed(2)}</td>
     <td class="lft ${sigClass(p.signal)}">${p.signal||''}</td>
     <td class="lft reason">${p.reason||''}</td><td class="lft reason">${p.risk||''}</td>
     <td class="lft row-actions">
@@ -371,7 +384,8 @@ function renderScreen(res){
       <button class="mini secondary" onclick="addWatchSym('${p.symbol}')">自选</button>
       <button class="mini secondary" onclick="addPaper('${p.symbol}')">模拟</button>
     </td></tr>`; });
-  document.getElementById('screen').innerHTML=h+'</tbody></table>';
+  let foot = sent? '<div class="sub" style="margin-top:6px;color:var(--yellow)">舆情为辅助因子，舆情热度不等于投资价值，不能单独作为买入依据。</div>':'';
+  document.getElementById('screen').innerHTML=h+'</tbody></table>'+foot;
 }
 
 async function viewDetail(sym){
@@ -395,6 +409,24 @@ async function viewDetail(sym){
       <tr><td class="lft">PE / PB / ROE</td><td>${fr('pe')} / ${fr('pb')} / ${fr('roe')}</td></tr>
     </table>
     <div class="legend" style="margin-top:8px">近60日价格趋势</div><canvas id="detailTrend" style="height:120px"></canvas>`;
+  // 舆情贡献
+  const s=d.sentiment;
+  if(s){
+    let sh='<div style="margin-top:10px;font-weight:600">舆情贡献 '+(s.is_mock?'<span class="pill mock">示例舆情数据</span>':'')+'</div>';
+    if(!s.available){ sh+='<div class="sub">'+(s.message||'暂无舆情数据，显示 N/A')+'</div>'; }
+    else{ const x=s.sentiment;
+      sh+=`<table>
+        <tr><td class="lft">关注度评分</td><td>${x.attention_score} (热度排名 ${x.hot_rank||'-'})</td></tr>
+        <tr><td class="lft">情绪分数</td><td class="${cls(x.sentiment_score||0)}">${x.sentiment_score}</td></tr>
+        <tr><td class="lft">新闻(1d/3d)</td><td>${Math.round(x.news_count_1d||0)}/${Math.round(x.news_count_3d||0)}</td></tr>
+        <tr><td class="lft">风险关键词</td><td class="neg">${(x.risk_keywords||[]).join('、')||'无'}</td></tr>
+        <tr><td class="lft">正面关键词</td><td class="pos">${(x.positive_keywords||[]).join('、')||'无'}</td></tr>
+      </table>`;
+      if((x.summary||[]).length) sh+='<div class="sub" style="margin-top:6px">最近新闻/讨论：'+x.summary.slice(0,5).join('；')+'</div>';
+    }
+    sh+='<div class="warnbox" style="margin-top:8px">'+(s.disclaimer||'舆情热度不等于投资价值。')+'</div>';
+    document.getElementById('detail').insertAdjacentHTML('beforeend', sh);
+  }
   drawLine('detailTrend',[{data:(d.trend||[]).map(t=>({value:t.close})),color:'#2f81f7'}]);
   log('查看详情：'+sym);
 }

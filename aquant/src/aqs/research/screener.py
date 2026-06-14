@@ -110,13 +110,23 @@ class ShortStrengthProfile(ScreenProfile):
         out = df.copy()
         trend_strength = (out["above_ma5"].astype(float) + out["above_ma10"].astype(float)
                           + out["above_ma20"].astype(float)) / 3.0
-        # 综合评分：3日20% 5日25% 量能20% 趋势15% 突破10% 风控10%
-        score = (
-            0.20 * _z(out["ret_3d"]) + 0.25 * _z(out["ret_5d"])
-            + 0.20 * _z(out["amount_ratio"]) + 0.15 * trend_strength
-            + 0.10 * out["breakout_20d"].astype(float)
-            - 0.10 * _z(out["risk_score"])
-        )
+        zret = 0.6 * _z(out["ret_5d"]) + 0.4 * _z(out["ret_3d"])   # 价格动量
+        use_sent = ("attention_score" in out.columns) and out["attention_score"].notna().any()
+
+        if use_sent:
+            att = out["attention_score"].astype(float)
+            att = att.fillna(att.median())
+            # 价格动量25% 量能20% 趋势15% 突破10% 舆情15% 风控15%
+            score = (0.25 * zret + 0.20 * _z(out["amount_ratio"]) + 0.15 * trend_strength
+                     + 0.10 * out["breakout_20d"].astype(float) + 0.15 * _z(att)
+                     - 0.15 * _z(out["risk_score"]))
+            out["sent_signal"] = out.apply(self._sent_signal, axis=1)
+        else:
+            # 无舆情：把 15% 舆情权重按比例并入其它因子
+            score = (0.29 * zret + 0.24 * _z(out["amount_ratio"]) + 0.18 * trend_strength
+                     + 0.12 * out["breakout_20d"].astype(float) - 0.17 * _z(out["risk_score"]))
+            if "attention_score" in out.columns:
+                out["sent_signal"] = "数据缺失"
         out["score"] = score
 
         # —— 硬性排除 ——
@@ -144,11 +154,40 @@ class ShortStrengthProfile(ScreenProfile):
             return "强势观察"
 
         out["signal"] = out.apply(signal, axis=1)
+        # 舆情对主信号的修正：负面风险/过热 → 谨慎；热度突破 → 强势
+        if use_sent:
+            for idx in out.index:
+                ss = out.at[idx, "sent_signal"]
+                if out.at[idx, "signal"] == "排除":
+                    continue
+                if ss in ("负面风险", "过热谨慎") and out.at[idx, "signal"] == "强势观察":
+                    out.at[idx, "signal"] = "过热谨慎"
         out["reason"] = out.apply(self._reason, axis=1)
         out["risk"] = out.apply(self._risk, axis=1)
         # 排除项分数压到最低，确保不排在前面
         out.loc[excl, "score"] = out["score"].min() - 1
         return out
+
+    @staticmethod
+    def _sent_signal(r) -> str:
+        att = r.get("attention_score")
+        if att is None or (isinstance(att, float) and att != att):
+            return "数据缺失"
+        rk = r.get("risk_keyword_count") or 0
+        neg = r.get("negative_ratio") or 0
+        pos = r.get("positive_ratio") or 0
+        chg = r.get("attention_change_1d")
+        if rk >= 3 and neg > pos:
+            return "负面风险"
+        if att >= 70 and (r.get("ret_5d") or 0) > 0.15:
+            return "过热谨慎"
+        if chg is not None and chg == chg and chg > 0.3:
+            return "热度上升"
+        if (r.get("sentiment_score") or 0) > 0.2:
+            return "情绪偏正面"
+        if att < 30:
+            return "关注度不足"
+        return "中性"
 
     @staticmethod
     def _reason(r) -> str:
@@ -158,6 +197,11 @@ class ShortStrengthProfile(ScreenProfile):
         if r["amount_ratio"] > 1.3: p.append(f"量能放大{r['amount_ratio']:.1f}x")
         if r["breakout_20d"]: p.append("突破20日新高")
         if r["above_ma5"] and r["above_ma10"]: p.append("站上MA5/MA10")
+        att = r.get("attention_score")
+        if att is not None and att == att:
+            if att >= 60: p.append(f"舆情热度高({att:.0f})")
+            chg = r.get("attention_change_1d")
+            if chg is not None and chg == chg and chg > 0.3: p.append("关注度快速上升")
         return "，".join(p) or "强势特征一般"
 
     @staticmethod
@@ -169,6 +213,8 @@ class ShortStrengthProfile(ScreenProfile):
         if r["amount"] < 5e7: p.append("成交额偏低")
         if r.get("is_st"): p.append("ST风险")
         if pd.notna(r.get("market_cap")) and r["market_cap"] > 3000e8: p.append("超大市值,弹性偏弱")
+        rks = r.get("risk_keywords")
+        if isinstance(rks, list) and rks: p.append("舆情风险词:" + "/".join(rks[:3]))
         return "，".join(p) or "风险可控"
 
 
@@ -324,6 +370,7 @@ class Screener:
         top_n: int = 20,
         auction: Optional[Dict[str, Dict[str, float]]] = None,
         market_caps: Optional[Dict[str, float]] = None,
+        sentiment: Optional[Dict[str, dict]] = None,
     ) -> pd.DataFrame:
         universe = list(universe) if universe else list(data.symbols)
         asof = pd.Timestamp(asof) if asof is not None else None
@@ -332,7 +379,7 @@ class Screener:
         rows = []
         with ctx:
             for sym in universe:
-                row = self._features(data, sym, auction, market_caps)
+                row = self._features(data, sym, auction, market_caps, sentiment)
                 if row is not None:
                     rows.append(row)
 
@@ -344,12 +391,13 @@ class Screener:
         df.insert(0, "rank", range(1, len(df) + 1))
 
         front = ["rank", "name", "industry", "close", "ret_3d", "ret_5d", "ret_10d", "ret_20d",
-                 "ret_60d", "amount", "amount_ratio", "breakout_20d", "rsi", "score",
-                 "signal", "reason", "risk"]
+                 "ret_60d", "amount", "amount_ratio", "breakout_20d", "rsi",
+                 "attention_score", "attention_change_1d", "sentiment_score", "news_count_1d",
+                 "risk_keyword_count", "sent_signal", "score", "signal", "reason", "risk"]
         cols = [c for c in front if c in df.columns] + [c for c in df.columns if c not in front]
         return df[cols].head(top_n).round(4)
 
-    def _features(self, data, sym: str, auction, market_caps=None):
+    def _features(self, data, sym: str, auction, market_caps=None, sentiment=None):
         from aqs.data.industry import industry_of
 
         inst = data.instrument(sym)
@@ -432,6 +480,22 @@ class Screener:
         if auction and sym in auction:
             row["auction_gap"] = float(auction[sym].get("gap", np.nan))
             row["auction_vol_ratio"] = float(auction[sym].get("auction_vol_ratio", np.nan))
+        if sentiment and sym in sentiment:
+            s = sentiment[sym]
+            row.update({
+                "attention_score": s.get("attention_score", np.nan),
+                "attention_change_1d": s.get("attention_change_1d"),
+                "sentiment_score": s.get("sentiment_score", np.nan),
+                "positive_ratio": s.get("positive_ratio", np.nan),
+                "negative_ratio": s.get("negative_ratio", np.nan),
+                "news_count_1d": s.get("news_count_1d", np.nan),
+                "news_count_3d": s.get("news_count_3d", np.nan),
+                "mention_count_1d": s.get("mention_count_1d", np.nan),
+                "risk_keyword_count": s.get("risk_keyword_count", np.nan),
+                "hot_rank": s.get("hot_rank"),
+                "sent_is_mock": bool(s.get("is_mock")),
+                "risk_keywords": s.get("risk_keywords", []),
+            })
         return row
 
 
