@@ -414,7 +414,70 @@ class MultiFactorV2(Strategy):
             ctx.order_target_percent(sym, w, tag="mfv2_enter")
 
 
+class _ScreenStrategy(Strategy):
+    """基于选股画像(ScreenProfile)的回测策略：每次调仓买入该画像评分最高的若干只。
+
+    使回测的"策略历史表现"与首页"策略筛选"使用同一套选股逻辑。
+    """
+
+    profile_key = "short_momentum"
+
+    def __init__(self, top_n: int = 5, rebalance: str = "weekly") -> None:
+        self.top_n = top_n
+        self.rebalance = rebalance
+
+    def initialize(self, ctx: Context) -> None:
+        ctx.schedule_function(self.rebalance_portfolio, self.rebalance)
+
+    def rebalance_portfolio(self, ctx: Context) -> None:
+        from aqs.research.screener import Screener
+
+        df = Screener(profile=self.profile_key).screen(
+            ctx.data, universe=ctx.universe, asof=ctx.now, top_n=max(self.top_n * 2, self.top_n)
+        )
+        if df.empty:
+            return
+        buy = [s for s in df.index if df.loc[s, "signal"] == "买入候选"][: self.top_n]
+        winners = buy or list(df.index[: self.top_n])
+        for sym in list(ctx.get_account()["positions"]):
+            if sym not in winners and ctx.can_trade(sym):
+                ctx.order_target_percent(sym, 0.0, tag="exit")
+        w = (0.95 / len(winners)) if winners else 0.0
+        for sym in winners:
+            if ctx.can_trade(sym):
+                ctx.order_target_percent(sym, w, tag=self.name)
+
+
+class ShortMomentum(_ScreenStrategy):
+    name = "短线强势选股"
+    profile_key = "short_momentum"
+
+    def __init__(self, top_n: int = 5, rebalance: str = "weekly") -> None:
+        super().__init__(top_n=top_n, rebalance=rebalance)
+
+
+class TrendQuality(_ScreenStrategy):
+    name = "稳健趋势选股"
+    profile_key = "trend_quality"
+
+    def __init__(self, top_n: int = 5, rebalance: str = "weekly") -> None:
+        super().__init__(top_n=top_n, rebalance=rebalance)
+
+
+class QualityValue(_ScreenStrategy):
+    name = "质量价值选股"
+    profile_key = "quality_value"
+
+    def __init__(self, top_n: int = 5, rebalance: str = "monthly") -> None:
+        super().__init__(top_n=top_n, rebalance=rebalance)
+
+
 TEMPLATES = {
+    # —— 核心策略（与首页选股画像一致）——
+    "short_momentum": ShortMomentum,
+    "trend_quality": TrendQuality,
+    "quality_value": QualityValue,
+    # —— 高级 / 实验策略 ——
     "buy_and_hold": BuyAndHold,
     "double_ma": DoubleMA,
     "low_volatility": LowVolatility,
@@ -427,3 +490,8 @@ TEMPLATES = {
     "grid": GridTrading,
     "etf_rotation": ETFRotation,
 }
+
+# 核心策略（首页默认展示）与高级/实验策略分类
+CORE_STRATEGIES = ["short_momentum", "trend_quality", "quality_value"]
+ADVANCED_STRATEGIES = [k for k in TEMPLATES if k not in CORE_STRATEGIES]
+DEFAULT_STRATEGY = "short_momentum"

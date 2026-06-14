@@ -81,6 +81,10 @@ class _BacktestContext(Context):
     def universe(self) -> List[str]:
         return self._e.universe
 
+    @property
+    def data(self):
+        return self._e.data
+
     def set_universe(self, symbols) -> None:
         self._e.universe = list(symbols)
 

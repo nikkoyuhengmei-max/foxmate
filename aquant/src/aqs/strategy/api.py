@@ -38,6 +38,11 @@ class Context(abc.ABC):
     @abc.abstractmethod
     def universe(self) -> List[str]: ...
 
+    @property
+    def data(self):
+        """底层数据管理器（供选股/因子计算使用）。引擎实现会重写。"""
+        raise NotImplementedError
+
     def set_universe(self, symbols: Iterable[str]) -> None:  # optional override
         raise NotImplementedError
 

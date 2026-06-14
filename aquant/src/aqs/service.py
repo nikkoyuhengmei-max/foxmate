@@ -173,6 +173,23 @@ def list_strategies() -> Dict[str, str]:
     return {key: cls.name for key, cls in TEMPLATES.items()}
 
 
+def strategy_catalog() -> Dict[str, Any]:
+    """返回分类后的策略目录：核心 / 高级实验，含中文名与适用周期。"""
+    from aqs.strategy.templates import CORE_STRATEGIES, ADVANCED_STRATEGIES, DEFAULT_STRATEGY
+    from aqs.research.screener import PROFILES
+
+    def entry(key):
+        cls = TEMPLATES[key]
+        prof = PROFILES.get(key)
+        return {"key": key, "name": cls.name, "horizon": getattr(prof, "horizon", "")}
+
+    return {
+        "core": [entry(k) for k in CORE_STRATEGIES],
+        "advanced": [entry(k) for k in ADVANCED_STRATEGIES],
+        "default": DEFAULT_STRATEGY,
+    }
+
+
 def _make_strategy(name: str, params: Optional[dict] = None):
     import inspect
 
@@ -214,7 +231,7 @@ def _ensure_outputs() -> str:
 
 
 def run_backtest(
-    strategy: str = "multi_factor",
+    strategy: str = "short_momentum",
     params: Optional[dict] = None,
     start: Optional[str] = None,
     end: Optional[str] = None,
@@ -236,10 +253,22 @@ def run_backtest(
     result = engine.run(start, end)
     report = analyze(result.equity_curve, result.benchmark, periods=config.annualization)
 
+    eq = result.equity_curve
     out: Dict[str, Any] = {
         "strategy": strategy,
         "strategy_name": strat.name,
         "params": params or {},
+        "settings": {
+            "benchmark": mdm.benchmark_symbol,
+            "fill_mode": fill_mode,
+            "rebalance": rebalance or getattr(strat, "rebalance", None),
+            "start": str(eq.index[0].date()) if len(eq) else None,
+            "end": str(eq.index[-1].date()) if len(eq) else None,
+            "commission_rate": config.cost.commission_rate,
+            "stamp_duty_rate": config.cost.stamp_duty_rate,
+            "slippage_bps": config.cost.slippage_bps,
+            "max_position": max_position if max_position is not None else config.risk.max_position_per_stock,
+        },
         "data_version": result.data_version,
         "metrics": {k: round(float(v), 6) for k, v in report.metrics.items()},
         "risk_review": risk.review(result.trades, result.equity_curve),
@@ -495,14 +524,58 @@ def _write_trades(trades, mode: str) -> Optional[str]:
     return path
 
 
+def stock_detail(symbol: str, strategy: str = "short_momentum", config: SystemConfig = DEFAULT_CONFIG) -> Dict[str, Any]:
+    """单只股票的策略解读：为何被选中、关键因子、风险、近期趋势与流动性。"""
+    from aqs.data import directory
+    from aqs.research.screener import Screener, ScreenConfig, PROFILES
+
+    resolved = directory.resolve(symbol)
+    if not resolved:
+        return {"symbol": symbol, "error": "未找到该股票代码或名称"}
+
+    mdm = _manager_for_symbol(resolved, config)
+    if mdm is None:
+        return {"symbol": resolved, "error": "无法获取该股票数据（请切换到 Baostock/AkShare）"}
+
+    profile = strategy if strategy in PROFILES else "short_momentum"
+    universe = mdm.symbols if resolved in mdm.symbols else [resolved]
+    df = Screener(ScreenConfig(exclude_st=False), profile=profile).screen(mdm, universe=universe, top_n=len(universe))
+    if df.empty or resolved not in df.index:
+        return {"symbol": resolved, "error": "数据不足，无法解读"}
+    row = df.loc[resolved].to_dict()
+
+    trend = mdm.get_price(resolved, fields=["close"])["close"].dropna().tail(60)
+    inst = mdm.instrument(resolved)
+    factors = {k: row.get(k) for k in
+               ["ret_5d", "ret_20d", "ret_60d", "vol_ratio", "rsi", "volatility",
+                "max_drawdown", "pe", "pb", "roe"] if k in row}
+    return {
+        "symbol": resolved,
+        "name": (inst.name if inst and inst.name else directory.name_of(resolved)),
+        "industry": row.get("industry"),
+        "strategy": profile,
+        "strategy_name": PROFILES[profile].name,
+        "rank": int(row["rank"]) if "rank" in row else None,
+        "score": round(float(row.get("score", 0)), 4),
+        "signal": row.get("signal"),
+        "reason": row.get("reason"),
+        "risk": row.get("risk"),
+        "last_price": row.get("close"),
+        "amount": row.get("amount"),
+        "factors": {k: (round(float(v), 4) if v is not None and pd.notna(v) else None) for k, v in factors.items()},
+        "trend": [{"date": str(i.date()), "close": round(float(v), 2)} for i, v in trend.items()],
+        "disclaimer": "以上为量化解读，不构成投资建议。",
+    }
+
+
 def refresh_real_data(
-    strategy: str = "multi_factor",
+    strategy: str = "short_momentum",
     forecast_sym: str = "600519.SH",
-    top_n: int = 8,
+    top_n: int = 20,
 ) -> Dict[str, Any]:
     """重新拉取真实数据并刷新 screen / backtest / forecast 输出（供仪表盘"刷新"按钮）。"""
     get_data_manager(refresh=True)  # 重新加载数据
-    screen = screen_stocks(top_n=top_n, save=True)
+    screen = screen_stocks(strategy=strategy, top_n=top_n, save=True)
     backtest = run_backtest(strategy=strategy, save=True, monte_carlo=False)
     forecast = forecast_symbol(forecast_sym)
     return {
@@ -515,7 +588,8 @@ def refresh_real_data(
 
 
 def screen_stocks(
-    top_n: int = 8,
+    strategy: str = "short_momentum",
+    top_n: int = 20,
     universe=None,
     asof: Optional[str] = None,
     min_amount: float = 0.0,
@@ -524,32 +598,24 @@ def screen_stocks(
     save: bool = False,
     config: SystemConfig = DEFAULT_CONFIG,
 ) -> dict:
-    """快速筛选 Top N 候选股（多周期历史 + 量化指标 + 可选集合竞价）。"""
-    from aqs.research.screener import Screener, ScreenConfig
+    """按所选策略画像筛选 Top N 候选股（含信号/选中原因/风险提示）。"""
+    from aqs.research.screener import Screener, ScreenConfig, PROFILES
 
     mdm = get_data_manager(config)
     syms = resolve_universe(universe) if universe is not None else list(mdm.symbols)
     syms = [s for s in syms if s in mdm.symbols]
 
-    # 最小成交额过滤（近 20 日日均成交额）
-    if min_amount and min_amount > 0:
-        kept = []
-        for s in syms:
-            try:
-                amt = mdm.get_price(s, fields=["amount"])["amount"].dropna().tail(20).mean()
-            except Exception:
-                amt = None
-            if amt is not None and amt >= min_amount:
-                kept.append(s)
-        syms = kept
-
-    cfg = ScreenConfig(exclude_st=exclude_st)
-    df = Screener(cfg).screen(mdm, universe=syms or None, asof=asof, top_n=top_n, auction=auction)
+    cfg = ScreenConfig(exclude_st=exclude_st, min_amount=min_amount)
+    profile = strategy if strategy in PROFILES else "short_momentum"
+    df = Screener(cfg, profile=profile).screen(mdm, universe=syms or None, asof=asof, top_n=top_n, auction=auction)
 
     sessions = mdm.trading_dates(end=asof) if asof else mdm.trading_dates()
     asof_date = asof or (str(sessions[-1].date()) if len(sessions) else None)
     picks = df.reset_index().to_dict(orient="records") if not df.empty else []
     out = {
+        "strategy": profile,
+        "strategy_name": PROFILES[profile].name,
+        "horizon": PROFILES[profile].horizon,
         "asof": asof_date,
         "top_n": top_n,
         "universe": universe if isinstance(universe, str) else (f"custom({len(syms)})" if universe else "default"),

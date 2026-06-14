@@ -35,6 +35,10 @@ class _LiveContext(Context):
     def universe(self) -> List[str]:
         return self._t.universe
 
+    @property
+    def data(self):
+        return self._t.data
+
     def set_universe(self, symbols) -> None:
         self._t.universe = list(symbols)
 

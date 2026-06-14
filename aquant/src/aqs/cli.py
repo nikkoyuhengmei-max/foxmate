@@ -44,8 +44,14 @@ def _print_metrics(metrics: dict) -> None:
 
 
 def cmd_strategies(_) -> int:
-    for key, name in service.list_strategies().items():
-        print(f"  {key:<14} {name}")
+    cat = service.strategy_catalog()
+    print("核心策略 (首页默认):")
+    for e in cat["core"]:
+        print(f"  {e['key']:<16} {e['name']}  [{e['horizon']}]")
+    print("\n高级 / 实验策略:")
+    for e in cat["advanced"]:
+        print(f"  {e['key']:<16} {e['name']}")
+    print(f"\n默认策略: {cat['default']}")
     return 0
 
 
@@ -98,18 +104,20 @@ def cmd_paper(args) -> int:
 
 def cmd_screen(args) -> int:
     res = service.screen_stocks(
+        strategy=getattr(args, "strategy", "short_momentum"),
         top_n=args.top, asof=args.asof, min_amount=getattr(args, "min_amount", 0.0),
         exclude_st=getattr(args, "exclude_st", True), save=getattr(args, "save", False),
     )
     flag = "真实数据" if res.get("is_real_data") else "示例数据(回退)"
-    print(f"\n选股结果 (asof={res['asof']}, Top {res['top_n']}, 数据源={res.get('source')}/{flag}):")
-    print("-" * 78)
-    print(f"{'代码':<11}{'名称':<10}{'行业':<8}{'综合分':>8}{'5日':>8}{'20日':>8}{'120日':>8}{'RSI':>6}")
+    print(f"\n【{res.get('strategy_name')}】选股结果 (asof={res['asof']}, Top {res['top_n']}, "
+          f"数据源={res.get('source')}/{flag}):")
+    print("-" * 96)
+    print(f"{'#':<3}{'代码':<11}{'名称':<10}{'行业':<8}{'最新价':>8}{'5日':>7}{'20日':>7}{'RSI':>5}{'评分':>7}  {'信号':<8}{'选中原因'}")
     for p in res["picks"]:
-        print(f"{p.get('symbol',''):<11}{str(p.get('name','')):<10}{str(p.get('industry','')):<8}"
-              f"{p.get('score',0):>8.2f}{p.get('ret_5d',0)*100:>7.1f}%{p.get('ret_20d',0)*100:>7.1f}%"
-              f"{p.get('ret_120d',0)*100:>7.1f}%{p.get('rsi',0):>6.0f}")
-    print("-" * 78)
+        print(f"{p.get('rank',''):<3}{p.get('symbol',''):<11}{str(p.get('name','')):<10}{str(p.get('industry','')):<8}"
+              f"{p.get('close',0):>8.2f}{p.get('ret_5d',0)*100:>6.1f}%{p.get('ret_20d',0)*100:>6.1f}%"
+              f"{p.get('rsi',0):>5.0f}{p.get('score',0):>7.2f}  {str(p.get('signal','')):<8}{str(p.get('reason',''))}")
+    print("-" * 96)
     if res.get("saved"):
         print(f"已导出: {res['saved']}")
     print(res["disclaimer"])
@@ -164,7 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("quality", help="数据质量报告", parents=[data]).set_defaults(func=cmd_quality)
 
     bt = sub.add_parser("backtest", help="运行回测", parents=[data])
-    bt.add_argument("--strategy", default="multi_factor")
+    bt.add_argument("--strategy", default="short_momentum")
     bt.add_argument("--params", help="JSON 参数, 如 '{\"top_n\":5}'")
     bt.add_argument("--fill", default="next_open", choices=["next_open", "close"])
     bt.add_argument("--rebalance", choices=["daily", "weekly", "monthly"], help="调仓频率")
@@ -179,7 +187,9 @@ def build_parser() -> argparse.ArgumentParser:
     pa.set_defaults(func=cmd_paper)
 
     sc = sub.add_parser("screen", help="快速筛选 Top N 候选股", parents=[data])
-    sc.add_argument("--top", type=int, default=8)
+    sc.add_argument("--strategy", default="short_momentum",
+                    help="选股策略: short_momentum/trend_quality/quality_value")
+    sc.add_argument("--top", type=int, default=20)
     sc.add_argument("--asof", help="筛选时点 (YYYY-MM-DD)，默认最新")
     sc.add_argument("--min-amount", dest="min_amount", type=float, default=0.0, help="最小近20日日均成交额(元)")
     sc.add_argument("--exclude-st", dest="exclude_st", action="store_true", default=True, help="排除 ST (默认开)")

@@ -64,6 +64,14 @@ def create_app() -> "FastAPI":
     def strategies() -> Dict[str, str]:
         return service.list_strategies()
 
+    @app.get("/api/strategies/catalog")
+    def strategies_catalog() -> Dict[str, Any]:
+        return service.strategy_catalog()
+
+    @app.get("/api/stock/detail")
+    def stock_detail(symbol: str = Query(...), strategy: str = "short_momentum") -> Dict[str, Any]:
+        return service.stock_detail(symbol, strategy=strategy)
+
     @app.get("/api/symbols")
     def symbols() -> List[dict]:
         return service.list_symbols()
@@ -112,8 +120,10 @@ def create_app() -> "FastAPI":
         return service.remove_from_watchlist(symbol)
 
     @app.get("/api/screen")
-    def screen(top_n: int = 8, asof: Optional[str] = None) -> Dict[str, Any]:
-        return service.screen_stocks(top_n=top_n, asof=asof)
+    def screen(strategy: str = "short_momentum", top_n: int = 20, asof: Optional[str] = None,
+               universe: Optional[str] = None, min_amount: float = 0.0) -> Dict[str, Any]:
+        return service.screen_stocks(strategy=strategy, top_n=top_n, asof=asof,
+                                     universe=universe, min_amount=min_amount)
 
     return app
 
