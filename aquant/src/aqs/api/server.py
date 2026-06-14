@@ -38,7 +38,13 @@ def create_app() -> "FastAPI":
 
     @app.get("/api/health")
     def health() -> Dict[str, Any]:
-        return {"status": "ok", "version": __version__}
+        routes = sorted({getattr(r, "path", "") for r in app.routes if getattr(r, "path", "").startswith("/api")})
+        return {
+            "status": "ok",
+            "version": __version__,
+            "data_source": service.DATA_CFG["source"],
+            "available_routes": routes,
+        }
 
     @app.get("/api/status")
     def status() -> Dict[str, Any]:
@@ -131,6 +137,45 @@ def create_app() -> "FastAPI":
     @app.delete("/api/watchlist")
     def del_watchlist(symbol: str = Query(...)) -> Dict[str, Any]:
         return service.remove_from_watchlist(symbol)
+
+    @app.post("/api/screen/run")
+    def screen_run(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """运行选股（前端「运行选股」按钮调用）。等价于 aquant screen。"""
+        import time
+
+        payload = payload or {}
+        strategy = payload.get("strategy", "short_strength")
+        if strategy not in service.list_strategies():
+            return {"success": False, "error": f"当前策略未实现: {strategy}"}
+        try:
+            t0 = time.time()
+            res = service.screen_stocks(
+                strategy=strategy,
+                top_n=int(payload.get("top", payload.get("top_n", 20))),
+                universe=payload.get("universe"),
+                asof=payload.get("asof"),
+                exclude_slow_blue_chip=bool(payload.get("exclude_large_cap", payload.get("exclude_slow_blue_chip", True))),
+                use_cache=bool(payload.get("use_cache", True)),
+            )
+            if not res.get("picks"):
+                return {"success": True, "strategy": res["strategy"], "strategy_name": res["strategy_name"],
+                        "asof_date": res["asof"], "data_source": res["source"], "is_real_data": res["is_real_data"],
+                        "elapsed_seconds": round(time.time() - t0, 2), "results": [],
+                        "message": "没有筛选出符合条件的股票，请降低筛选条件或扩大股票池。",
+                        "disclaimer": res["disclaimer"]}
+            return {
+                "success": True,
+                "strategy": res["strategy"],
+                "strategy_name": res["strategy_name"],
+                "asof_date": res["asof"],
+                "data_source": res["source"],
+                "is_real_data": res["is_real_data"],
+                "elapsed_seconds": round(time.time() - t0, 2),
+                "results": res["picks"],
+                "disclaimer": res["disclaimer"],
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {"success": False, "error": f"{type(exc).__name__}: {exc}"}
 
     @app.get("/api/screen")
     def screen(strategy: str = "short_strength", top_n: int = 20, asof: Optional[str] = None,

@@ -297,11 +297,14 @@ async function runScreen(){
   const timer=setInterval(()=>{si=Math.min(si+1,stages.length-1);sc.innerHTML='<div class="empty">'+stages[si]+'</div>';},1500);
   log('运行选股：'+currentStrategy+' Top'+top+(uni?(' 股票池='+uni):'')+(exb?' 排除慢蓝筹':''));
   try{
-    const res=await api(`/api/screen?strategy=${currentStrategy}&top_n=${top}&universe=${encodeURIComponent(uni)}&exclude_slow_blue_chip=${exb}`,null,30000);
+    const res=await api('/api/screen/run',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({strategy:currentStrategy,top:Number(top),universe:uni,exclude_large_cap:exb,use_cache:true})},30000);
     clearInterval(timer);
-    if(res.error){sc.innerHTML='<div class="neg">'+res.error+'</div>';return;}
-    renderScreen(res);
-    const dt=((performance.now()-t0)/1000).toFixed(1);
+    if(res.success===false){sc.innerHTML='<div class="neg">运行失败：'+(res.error||'未知错误')+'</div>';log('选股失败：'+res.error);return;}
+    // 适配 /api/screen/run 返回结构
+    renderScreen({picks:res.results||[], strategy_name:res.strategy_name, asof:res.asof_date,
+                  is_real_data:res.is_real_data, source:res.data_source});
+    const dt=(res.elapsed_seconds!=null)?res.elapsed_seconds:((performance.now()-t0)/1000).toFixed(1);
     document.getElementById('screenMeta').textContent+= ` · 用时 ${dt}s`;
     log('选股完成，用时 '+dt+' 秒');
     await loadStatus(); runBacktest();
