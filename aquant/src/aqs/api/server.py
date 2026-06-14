@@ -38,12 +38,27 @@ def create_app() -> "FastAPI":
 
     @app.get("/api/health")
     def health() -> Dict[str, Any]:
-        return {
-            "status": "ok",
-            "version": __version__,
-            "source": service.DATA_CFG["source"],
-            "n_symbols": len(service.DATA_CFG["symbols"]),
-        }
+        return {"status": "ok", "version": __version__}
+
+    @app.get("/api/status")
+    def status() -> Dict[str, Any]:
+        st = service.data_status()
+        st["version"] = __version__
+        st["has_trade_records"] = service.recent_trades(limit=1)["has_records"]
+        return st
+
+    @app.get("/api/trades")
+    def trades() -> Dict[str, Any]:
+        return service.recent_trades()
+
+    @app.post("/api/refresh")
+    def refresh(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        payload = payload or {}
+        return service.refresh_real_data(
+            strategy=payload.get("strategy", "multi_factor"),
+            forecast_sym=payload.get("symbol", "600519.SH"),
+            top_n=payload.get("top_n", 8),
+        )
 
     @app.get("/api/strategies")
     def strategies() -> Dict[str, str]:

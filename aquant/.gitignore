@@ -14,5 +14,7 @@ venv/
 data_store/
 .cache/
 .cache_demo/
+outputs/
+records/
 *.pkl
 .DS_Store

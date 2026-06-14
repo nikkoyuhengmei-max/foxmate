@@ -72,6 +72,37 @@ aquant serve --source baostock                          # 仪表盘也用真实�
 
 也可用环境变量配置：`AQUANT_SOURCE`、`AQUANT_SYMBOLS`、`AQUANT_START`、`AQUANT_END`、`AQUANT_CACHE_DIR`。
 
+### 选股 / 回测参数与导出
+
+```bash
+# 选股：时点 / 数量 / 股票池(hs300/zz500/sz50) / 最小成交额 / 排除ST / 导出
+aquant screen --asof 2026-06-12 --top 20 --universe hs300 --min-amount 50000000 --save
+# 回测：区间 / 股票池 / 策略 / 调仓频率 / 单只最大仓位 / 导出 csv+html
+aquant backtest --strategy multi_factor --start 2024-01-01 --end 2026-06-12 --universe hs300 \
+                --rebalance monthly --max-position 0.2 --save
+```
+
+导出位置：`outputs/screen_日期.csv`、`outputs/backtest_策略_日期.{csv,html}`，仪表盘会读取最新输出。
+
+### 行业映射
+
+数据源缺行业字段时，用本地 `data/industry_map.csv` 自动补全（命中即显示行业，未命中显示"未分类"）。
+可用环境变量 `AQUANT_INDUSTRY_MAP` 指定自定义映射文件。
+
+### 对比用基础策略
+
+`buy_and_hold`(买入持有) / `double_ma`(双均线) / `low_volatility`(低波动) / `dividend_value`(低估值价值) /
+`momentum_20_60`(20/60动量) / `multi_factor_v2`(多因子升级)，均可 `aquant backtest --strategy <名称>` 运行、输出同样指标。
+
+### 仪表盘（真实/示例/模拟/实盘 明确区分）
+
+`aquant serve` 后顶部状态栏显示：**数据源 / 数据日期 / 系统时间 / 是否真实数据 / 是否有成交记录**；
+- 非真实数据时显示醒目「当前为示例数据(mock)」横幅；
+- 「🔄 刷新真实数据」按钮一键重跑 screen+backtest+forecast 并刷新；
+- 「最近成交」仅来自真实 paper/live 记录（`outputs/trades.csv`），无记录显示「暂无真实成交记录」，**不再显示任何假成交**；
+- AI 预测显示训练区间与最新行情日期，数据过期(>7天)弹黄色警告；
+- 系统日志使用当前系统时间。
+
 ### 仪表盘
 `aquant serve` 后浏览器打开 http://127.0.0.1:8000 ，可在线运行回测、查看净值/回撤曲线、月度收益热力图、
 风控与合规面板、最近成交、系统日志，以及"AI 走势分析/预测"。所有计算均在本地完成，数据不出本机。

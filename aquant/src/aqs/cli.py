@@ -59,8 +59,11 @@ def cmd_quality(_) -> int:
 
 def cmd_backtest(args) -> int:
     params = json.loads(args.params) if args.params else None
-    res = service.run_backtest(strategy=args.strategy, params=params, start=args.start,
-                               end=args.end, fill_mode=args.fill)
+    res = service.run_backtest(
+        strategy=args.strategy, params=params, start=args.start, end=args.end,
+        fill_mode=args.fill, rebalance=getattr(args, "rebalance", None),
+        max_position=getattr(args, "max_position", None), save=getattr(args, "save", False),
+    )
     print(f"\n策略: {res['strategy_name']} ({res['strategy']})  数据版本: {res['data_version']}")
     print("-" * 50)
     _print_metrics(res["metrics"])
@@ -75,6 +78,8 @@ def cmd_backtest(args) -> int:
     if res.get("monte_carlo"):
         mc = res["monte_carlo"]
         print(f"  MC中位回撤  : {mc.get('mc_median_max_drawdown', 0):.2%}  亏损概率: {mc.get('mc_prob_loss', 0):.2%}")
+    if res.get("saved"):
+        print(f"  已导出      : {res['saved'].get('csv')} , {res['saved'].get('html')}")
     if args.json:
         print("\n" + json.dumps(res["metrics"], ensure_ascii=False, indent=2))
     return 0
@@ -92,15 +97,21 @@ def cmd_paper(args) -> int:
 
 
 def cmd_screen(args) -> int:
-    res = service.screen_stocks(top_n=args.top, asof=args.asof)
-    print(f"\n选股结果 (asof={res['asof']}, Top {res['top_n']}):")
+    res = service.screen_stocks(
+        top_n=args.top, asof=args.asof, min_amount=getattr(args, "min_amount", 0.0),
+        exclude_st=getattr(args, "exclude_st", True), save=getattr(args, "save", False),
+    )
+    flag = "真实数据" if res.get("is_real_data") else "示例数据(回退)"
+    print(f"\n选股结果 (asof={res['asof']}, Top {res['top_n']}, 数据源={res.get('source')}/{flag}):")
     print("-" * 78)
-    print(f"{'代码':<11}{'名称':<8}{'行业':<8}{'综合分':>8}{'5日':>8}{'20日':>8}{'120日':>8}{'RSI':>6}")
+    print(f"{'代码':<11}{'名称':<10}{'行业':<8}{'综合分':>8}{'5日':>8}{'20日':>8}{'120日':>8}{'RSI':>6}")
     for p in res["picks"]:
-        print(f"{p.get('symbol',''):<11}{str(p.get('name','')):<8}{str(p.get('industry','')):<8}"
+        print(f"{p.get('symbol',''):<11}{str(p.get('name','')):<10}{str(p.get('industry','')):<8}"
               f"{p.get('score',0):>8.2f}{p.get('ret_5d',0)*100:>7.1f}%{p.get('ret_20d',0)*100:>7.1f}%"
               f"{p.get('ret_120d',0)*100:>7.1f}%{p.get('rsi',0):>6.0f}")
     print("-" * 78)
+    if res.get("saved"):
+        print(f"已导出: {res['saved']}")
     print(res["disclaimer"])
     return 0
 
@@ -140,6 +151,7 @@ def build_parser() -> argparse.ArgumentParser:
     data.add_argument("--source", choices=["baostock", "akshare", "sample"],
                       help="数据源 (默认 baostock，取数失败自动回退 sample)")
     data.add_argument("--symbols", help="逗号分隔股票池, 如 600519.SH,000333.SZ")
+    data.add_argument("--universe", help="股票池预设: hs300 / zz500 / sz50 / custom")
     data.add_argument("--start", help="数据起始日期 YYYY-MM-DD")
     data.add_argument("--end", help="数据结束日期 YYYY-MM-DD")
     data.add_argument("--benchmark", help="基准指数, 默认 000300.SH")
@@ -155,6 +167,9 @@ def build_parser() -> argparse.ArgumentParser:
     bt.add_argument("--strategy", default="multi_factor")
     bt.add_argument("--params", help="JSON 参数, 如 '{\"top_n\":5}'")
     bt.add_argument("--fill", default="next_open", choices=["next_open", "close"])
+    bt.add_argument("--rebalance", choices=["daily", "weekly", "monthly"], help="调仓频率")
+    bt.add_argument("--max-position", dest="max_position", type=float, help="单只最大仓位, 如 0.2")
+    bt.add_argument("--save", action="store_true", help="导出结果到 outputs/")
     bt.add_argument("--json", action="store_true")
     bt.set_defaults(func=cmd_backtest)
 
@@ -166,6 +181,10 @@ def build_parser() -> argparse.ArgumentParser:
     sc = sub.add_parser("screen", help="快速筛选 Top N 候选股", parents=[data])
     sc.add_argument("--top", type=int, default=8)
     sc.add_argument("--asof", help="筛选时点 (YYYY-MM-DD)，默认最新")
+    sc.add_argument("--min-amount", dest="min_amount", type=float, default=0.0, help="最小近20日日均成交额(元)")
+    sc.add_argument("--exclude-st", dest="exclude_st", action="store_true", default=True, help="排除 ST (默认开)")
+    sc.add_argument("--include-st", dest="exclude_st", action="store_false", help="包含 ST")
+    sc.add_argument("--save", action="store_true", help="导出结果到 outputs/")
     sc.set_defaults(func=cmd_screen)
 
     fc = sub.add_parser("forecast", help="走势分析与预测", parents=[data])
@@ -184,7 +203,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _apply_data_config(args) -> None:
     """把命令行数据源参数应用到 service 全局配置。"""
-    symbols = [s.strip() for s in args.symbols.split(",")] if getattr(args, "symbols", None) else None
+    symbols = None
+    if getattr(args, "symbols", None):
+        symbols = [s.strip() for s in args.symbols.split(",")]
+    elif getattr(args, "universe", None):
+        # 预设股票池（hs300/zz500/sz50）解析为具体代码
+        symbols = service.resolve_universe(args.universe)
     service.configure_data(
         source=getattr(args, "source", None),
         symbols=symbols,

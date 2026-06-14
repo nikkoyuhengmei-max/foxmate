@@ -198,7 +198,12 @@ class MarketDataManager:
         return mgr
 
     def load_dataset(self, ds: SampleDataset) -> None:
+        from aqs.data.industry import fill_missing
+
         self._instruments = dict(ds.instruments)
+        # 用本地行业映射补全缺失行业
+        for sym, inst in self._instruments.items():
+            inst.industry = fill_missing(inst.industry, sym)
         self._bars = {s: clean_bars(df) for s, df in ds.bars.items()}
         self._adj = dict(ds.adj_factors)
         self._fundamentals = ds.fundamentals.copy()

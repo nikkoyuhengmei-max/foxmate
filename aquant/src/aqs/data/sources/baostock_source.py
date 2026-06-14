@@ -18,6 +18,37 @@ from aqs.data.instruments import AssetType, Instrument, classify_board
 from aqs.data.sample_data import SampleDataset
 
 
+def _to_our_code(bs_code: str) -> str:
+    """'sh.600519' -> '600519.SH'。"""
+    market, _, code = bs_code.partition(".")
+    return f"{code}.{market.upper()}"
+
+
+def fetch_index_constituents(name: str) -> List[str]:
+    """获取指数成分股（'hs300'|'zz500'|'sz50'），返回本系统代码格式列表。"""
+    try:
+        import baostock as bs  # type: ignore
+    except Exception as exc:
+        raise ImportError("未找到 baostock。请先安装：pip install baostock") from exc
+    fn = {
+        "hs300": "query_hs300_stocks",
+        "zz500": "query_zz500_stocks",
+        "sz50": "query_sz50_stocks",
+    }.get(name.lower())
+    if fn is None:
+        raise ValueError(f"未知指数 universe: {name}")
+    lg = bs.login()
+    try:
+        rs = getattr(bs, fn)()
+        if getattr(rs, "error_code", "0") != "0":
+            raise RuntimeError(rs.error_msg)
+        df = rs.get_data()
+        col = "code" if "code" in df.columns else df.columns[-1]
+        return [_to_our_code(c) for c in df[col].tolist()]
+    finally:
+        bs.logout()
+
+
 def _bs_code(symbol: str) -> str:
     """'600519.SH' -> 'sh.600519'；'000001.SZ' -> 'sz.000001'。"""
     code, _, suffix = symbol.partition(".")
