@@ -56,13 +56,18 @@
 <body>
 <header>
   <h1>🦊 <span>AQuant</span> · 策略选股工作台</h1>
-  <button onclick="refreshAll()" id="refreshBtn">🔄 刷新真实数据</button>
+  <div class="controls" style="margin:0">
+    <button class="secondary" onclick="checkData()" id="checkBtn">🔍 数据源检测</button>
+    <label class="sub"><input type="checkbox" id="demoToggle" onchange="toggleDemo()"> 演示模式(示例数据)</label>
+    <button onclick="refreshAll()" id="refreshBtn">🔄 刷新真实数据</button>
+  </div>
 </header>
 
 <div class="wrap">
   <!-- A. 数据状态栏 -->
   <div class="status" id="statusBar"><span class="sub">加载中…</span></div>
   <div id="demoBanner"></div>
+  <div id="dataCheckBox"></div>
 
   <!-- 短线选股时间模式 -->
   <div class="card" id="timingCard">
@@ -84,7 +89,7 @@
       <select id="advStrategy" class="hidden" onchange="useAdv()"></select>
       <label>股票池
         <select id="universe" onchange="runScreen()">
-          <option value="">默认池(快)</option>
+          <option value="">蓝筹快速池(真实)</option>
           <option value="hs300">沪深300</option>
           <option value="zz500">中证500</option>
           <option value="watchlist">自选股</option>
@@ -263,9 +268,10 @@ function useAdv(){ currentStrategy=document.getElementById('advStrategy').value;
 
 async function loadStatus(){
   const s=await api('/api/status'); const real=s.is_real_data;
-  const pill=real?'<span class="pill real">真实数据</span>':'<span class="pill mock">示例数据(mock)</span>';
+  const pill=real?'<span class="pill real">真实数据</span>':(s.using_mock?'<span class="pill mock">示例数据(mock)</span>':'<span class="pill off">不可用</span>');
   const paper=s.has_trade_records?'<span class="pill real">有成交记录</span>':'<span class="pill off">无成交记录</span>';
-  const sname=(catalog&&[...catalog.core,...catalog.advanced].find(x=>x.key===currentStrategy)||{}).name||currentStrategy;
+  const sname=stratName();
+  document.getElementById('demoToggle').checked=!!s.demo_mode;
   document.getElementById('statusBar').innerHTML=`
     <div class="item">数据源：<b>${s.actual_source||'-'}</b></div>
     <div class="item">数据日期：<b>${s.data_date||'-'}</b></div>
@@ -276,8 +282,39 @@ async function loadStatus(){
     <div class="item">模拟/实盘：${paper}</div>
     <div class="item sub">v${s.version||''}</div>`;
   const b=document.getElementById('demoBanner');
-  b.innerHTML=real?'':'⚠️ 当前为示例数据(mock)，仅供演示，不代表真实行情。请配置 Baostock/AkShare 等真实数据源。';
-  b.className=real?'':'demo-banner';
+  if(s.using_mock){ b.className='demo-banner'; b.innerHTML='🟥 当前为示例数据，不是真实行情。（仅演示模式，请关闭演示模式并使用 Baostock/AkShare 真实数据）'; }
+  else if(s.error){ b.className='demo-banner'; b.style.borderColor='var(--red)'; b.style.color='var(--red)';
+    b.innerHTML='❌ 真实数据源不可用：'+s.error+'　请点「数据源检测」排查。'; }
+  else { b.className=''; b.innerHTML=''; b.removeAttribute('style'); }
+}
+
+async function toggleDemo(){
+  const on=document.getElementById('demoToggle').checked;
+  if(on && !confirm('演示模式将使用“示例数据(mock)”，不代表真实行情。确定开启？')){ document.getElementById('demoToggle').checked=false; return; }
+  await api('/api/demo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:on})});
+  log('演示模式：'+(on?'开启(示例数据)':'关闭(真实数据)'));
+  await loadStatus(); runScreen();
+}
+
+async function checkData(){
+  busy('checkBtn',true,'检测中…');
+  const box=document.getElementById('dataCheckBox');
+  try{
+    const d=await api('/api/data/check',null,40000);
+    const yn=v=>v?'<span class="pos">✓</span>':'<span class="neg">✗</span>';
+    box.className='card'; box.innerHTML=`<h3>数据源检测</h3><table>
+      <tr><td class="lft">当前实际数据源</td><td class="lft"><b>${d.actual_source||'-'}</b> ${d.using_mock?'<span class="pill mock">mock</span>':''}</td></tr>
+      <tr><td class="lft">Baostock 安装</td><td class="lft">${yn(d.baostock_import)}</td></tr>
+      <tr><td class="lft">Baostock 登录</td><td class="lft">${yn(d.baostock_login)}</td></tr>
+      <tr><td class="lft">Baostock 取数</td><td class="lft">${yn(d.baostock_sample_ok)}</td></tr>
+      <tr><td class="lft">AkShare 安装</td><td class="lft">${yn(d.akshare_import)}</td></tr>
+      <tr><td class="lft">AkShare 取数</td><td class="lft">${yn(d.akshare_sample_ok)}</td></tr>
+      <tr><td class="lft">演示模式</td><td class="lft">${d.demo_mode?'开启':'关闭'}</td></tr>
+      ${d.error?`<tr><td class="lft">错误</td><td class="lft neg">${d.error}</td></tr>`:''}
+    </table>`;
+    log('数据源检测完成');
+  }catch(e){ box.className='card'; box.innerHTML='<div class="neg">检测失败：'+e.message+'</div>'; }
+  finally{ busy('checkBtn',false); }
 }
 
 function stratName(){const e=stratEntry(currentStrategy);return e?e.name:currentStrategy;}

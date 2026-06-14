@@ -57,6 +57,15 @@ aquant serve                            # 启动本地 Web 仪表盘 (http://127
 
 > 未安装也可直接运行：`PYTHONPATH=src python -m aqs.cli backtest`。
 
+### 真实数据 vs 示例数据（默认不使用 mock）
+
+- **默认禁用示例数据**：真实数据源(Baostock/AkShare)取数失败时**不再静默回退到示例股票**，而是直接报错并显示原因
+  （Baostock 登录失败 / AkShare 获取失败 / 股票池为空 / 网络不可用 / 超时）。
+- 只有手动勾选仪表盘顶部「演示模式」(或 `AQUANT_DEMO=1`) 才会使用示例数据(mock)，且页面顶部显示红色警告
+  「当前为示例数据，不是真实行情。」
+- 顶部「🔍 数据源检测」按钮（`GET /api/data/check`）显示 Baostock/AkShare 是否可用、当前实际用的是真实数据还是 mock。
+- 股票名称来自真实数据源 / `data/cache/stock_universe.csv`，不会出现"示例银行/示例医药"等假名称（除非演示模式）。
+
 ### 性能与缓存
 
 - 全市场股票列表缓存到 `data/cache/stock_universe.csv`，行情数据集缓存到 `data/cache/`（同一天/同一股票池不重复请求）。

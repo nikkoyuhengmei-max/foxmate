@@ -46,6 +46,10 @@ def _env_symbols() -> List[str]:
     return [s.strip() for s in raw.split(",") if s.strip()] if raw else list(_DEFAULT_UNIVERSE)
 
 
+class DataSourceError(Exception):
+    """真实数据源不可用（登录/取数/网络失败）。默认不回退到示例数据。"""
+
+
 _s, _e = _default_dates()
 DATA_CFG: Dict[str, Any] = {
     "source": os.getenv("AQUANT_SOURCE", "baostock"),   # baostock | akshare | sample
@@ -55,6 +59,8 @@ DATA_CFG: Dict[str, Any] = {
     "benchmark": os.getenv("AQUANT_BENCHMARK", "000300.SH"),
     "cache_dir": os.getenv("AQUANT_CACHE_DIR", os.path.join("data", "cache")),
     "refresh": False,
+    # 演示模式：仅当显式开启才允许使用 mock/示例数据
+    "demo_mode": os.getenv("AQUANT_DEMO", "").lower() in ("1", "true", "yes"),
 }
 
 
@@ -66,8 +72,11 @@ def configure_data(
     benchmark: Optional[str] = None,
     cache_dir: Optional[str] = None,
     refresh: Optional[bool] = None,
+    demo_mode: Optional[bool] = None,
 ) -> None:
     """更新全局数据源配置，并清空已加载的数据缓存。"""
+    if demo_mode is not None:
+        DATA_CFG["demo_mode"] = bool(demo_mode)
     if source is not None:
         DATA_CFG["source"] = source
     if symbols:
@@ -86,7 +95,7 @@ def configure_data(
 
 
 # 实际生效的数据来源（区分配置与回退结果）。
-_ACTUAL: Dict[str, Any] = {"source": None, "is_real": False}
+_ACTUAL: Dict[str, Any] = {"source": None, "is_real": False, "using_mock": False, "error": None}
 
 # 指数成分股缓存
 _UNIVERSE_CACHE: Dict[str, List[str]] = {}
@@ -177,32 +186,86 @@ def get_data_manager(config: SystemConfig = DEFAULT_CONFIG, refresh: bool = Fals
 
     cfg = DATA_CFG
     src = cfg["source"]
-    mgr: Optional[MarketDataManager] = None
+    use_mock = cfg.get("demo_mode") or src == "sample"
 
-    if src in ("baostock", "akshare"):
-        try:
-            common = dict(
-                symbols=cfg["symbols"], start=cfg["start"], end=cfg["end"],
-                benchmark=cfg["benchmark"], cache_dir=cfg["cache_dir"],
-                refresh=cfg["refresh"], config=config,
-            )
-            if src == "baostock":
-                mgr = MarketDataManager.from_baostock(**common)
-            else:
-                mgr = MarketDataManager.from_akshare(**common)
-            if not mgr.symbols:
-                raise RuntimeError("数据源未返回任何标的")
-            _ACTUAL["source"], _ACTUAL["is_real"] = src, True
-        except Exception as exc:  # noqa: BLE001
-            print(f"[data] 数据源 '{src}' 取数失败，回退到示例数据：{exc}")
-            mgr = None
-
-    if mgr is None:
+    if use_mock:
         mgr = MarketDataManager.from_sample(config)
-        _ACTUAL["source"], _ACTUAL["is_real"] = "sample", False
+        _ACTUAL.update({"source": "sample", "is_real": False, "using_mock": True, "error": None})
+        _DATA_CACHE["default"] = mgr
+        return mgr
 
+    # 真实数据源：失败不回退到 mock，直接抛错由上层显示原因
+    try:
+        common = dict(
+            symbols=cfg["symbols"], start=cfg["start"], end=cfg["end"],
+            benchmark=cfg["benchmark"], cache_dir=cfg["cache_dir"],
+            refresh=cfg["refresh"], config=config,
+        )
+        if src == "baostock":
+            mgr = MarketDataManager.from_baostock(**common)
+        elif src == "akshare":
+            mgr = MarketDataManager.from_akshare(**common)
+        else:
+            raise DataSourceError(f"未知数据源: {src}")
+        if not mgr.symbols:
+            raise DataSourceError("股票池为空：真实数据源未返回任何标的")
+    except DataSourceError as exc:
+        _ACTUAL.update({"source": src, "is_real": False, "using_mock": False, "error": str(exc)})
+        raise
+    except Exception as exc:  # noqa: BLE001
+        msg = f"真实数据源不可用，请检查 Baostock/AkShare 或网络连接（{src}: {exc}）"
+        _ACTUAL.update({"source": src, "is_real": False, "using_mock": False, "error": msg})
+        raise DataSourceError(msg) from exc
+
+    _ACTUAL.update({"source": src, "is_real": True, "using_mock": False, "error": None})
     _DATA_CACHE["default"] = mgr
     return mgr
+
+
+def data_source_check() -> Dict[str, Any]:
+    """检测各数据源可用性，供仪表盘「数据源检测」按钮。"""
+    out = {
+        "baostock_import": False, "baostock_login": False, "baostock_sample_ok": False,
+        "akshare_import": False, "akshare_sample_ok": False,
+        "using_mock": bool(_ACTUAL.get("using_mock")),
+        "actual_source": _ACTUAL.get("source"),
+        "configured_source": DATA_CFG["source"],
+        "demo_mode": bool(DATA_CFG.get("demo_mode")),
+        "error": None,
+    }
+    errs: List[str] = []
+    try:
+        import baostock as bs  # type: ignore
+        out["baostock_import"] = True
+        try:
+            lg = bs.login()
+            if getattr(lg, "error_code", "1") == "0":
+                out["baostock_login"] = True
+                rs = bs.query_history_k_data_plus(
+                    "sh.600519", "date,close", start_date="2023-12-01", end_date="2023-12-10",
+                    frequency="d", adjustflag="3")
+                df = rs.get_data() if getattr(rs, "error_code", "1") == "0" else None
+                out["baostock_sample_ok"] = bool(df is not None and not df.empty)
+            else:
+                errs.append(f"baostock 登录失败: {getattr(lg, 'error_msg', '')}")
+            bs.logout()
+        except Exception as exc:  # noqa: BLE001
+            errs.append(f"baostock: {exc}")
+    except Exception as exc:  # noqa: BLE001
+        errs.append(f"baostock 未安装: {exc}")
+    try:
+        import akshare as ak  # type: ignore
+        out["akshare_import"] = True
+        try:
+            df = ak.stock_zh_a_hist(symbol="600519", period="daily",
+                                    start_date="20231201", end_date="20231210", adjust="qfq")
+            out["akshare_sample_ok"] = bool(df is not None and not df.empty)
+        except Exception as exc:  # noqa: BLE001
+            errs.append(f"akshare 获取失败: {exc}")
+    except Exception as exc:  # noqa: BLE001
+        errs.append(f"akshare 未安装: {exc}")
+    out["error"] = "; ".join(errs) if errs else None
+    return out
 
 
 def active_source() -> str:
@@ -211,19 +274,34 @@ def active_source() -> str:
 
 def data_status() -> Dict[str, Any]:
     """仪表盘顶部状态：数据源 / 数据日期 / 系统时间 / 是否真实数据。"""
-    mgr = get_data_manager()
-    sessions = mgr.trading_dates()
-    data_date = str(sessions[-1].date()) if len(sessions) else None
-    return {
+    base = {
         "configured_source": DATA_CFG["source"],
         "actual_source": _ACTUAL["source"] or DATA_CFG["source"],
-        "is_real_data": bool(_ACTUAL["is_real"]),
-        "data_date": data_date,
+        "is_real_data": False,
+        "using_mock": bool(DATA_CFG.get("demo_mode") or DATA_CFG["source"] == "sample"),
+        "demo_mode": bool(DATA_CFG.get("demo_mode")),
+        "data_date": None,
         "system_time": _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "n_symbols": len(mgr.symbols),
+        "n_symbols": 0,
         "universe_start": DATA_CFG["start"],
         "universe_end": DATA_CFG["end"],
+        "error": None,
     }
+    try:
+        mgr = get_data_manager()
+    except DataSourceError as exc:
+        base["error"] = str(exc)
+        return base
+    sessions = mgr.trading_dates()
+    base.update({
+        "actual_source": _ACTUAL["source"] or DATA_CFG["source"],
+        "is_real_data": bool(_ACTUAL["is_real"]),
+        "using_mock": bool(_ACTUAL["using_mock"]),
+        "data_date": str(sessions[-1].date()) if len(sessions) else None,
+        "n_symbols": len(mgr.symbols),
+        "error": _ACTUAL.get("error"),
+    })
+    return base
 
 
 def list_strategies() -> Dict[str, str]:

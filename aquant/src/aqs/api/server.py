@@ -29,7 +29,13 @@ _DASHBOARD = os.path.join(_HERE, "static", "dashboard.html")
 
 
 def create_app() -> "FastAPI":
+    from fastapi import Request
+
     app = FastAPI(title="AQuant - A股量化交易系统", version=__version__)
+
+    @app.exception_handler(service.DataSourceError)
+    def _data_source_error(request: "Request", exc: service.DataSourceError):
+        return JSONResponse(status_code=200, content={"success": False, "error": str(exc)})
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
@@ -52,6 +58,16 @@ def create_app() -> "FastAPI":
         st["version"] = __version__
         st["has_trade_records"] = service.recent_trades(limit=1)["has_records"]
         return st
+
+    @app.get("/api/data/check")
+    def data_check() -> Dict[str, Any]:
+        return service.data_source_check()
+
+    @app.post("/api/demo")
+    def set_demo(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        payload = payload or {}
+        service.configure_data(demo_mode=bool(payload.get("enabled", False)))
+        return service.data_status()
 
     @app.get("/api/trades")
     def trades() -> Dict[str, Any]:

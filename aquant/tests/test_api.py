@@ -67,3 +67,40 @@ def test_strategies_catalog_not_empty(client):
     cat = client.get("/api/strategies/catalog").json()
     assert [e["key"] for e in cat["core"]] == ["short_strength", "trend_quality", "quality_value"]
     assert cat["core"][0]["name"] == "短线强势股"
+
+
+def test_no_mock_fallback_on_real_source_failure(monkeypatch):
+    """真实数据源失败时不得回退到示例数据，应抛 DataSourceError。"""
+    from aqs.data.market_data import MarketDataManager
+
+    service.configure_data(source="baostock", demo_mode=False)
+    service._DATA_CACHE.pop("default", None)
+
+    def boom(*a, **k):
+        raise RuntimeError("登录失败/网络不可用")
+
+    monkeypatch.setattr(MarketDataManager, "from_baostock", classmethod(lambda cls, *a, **k: boom()))
+    with pytest.raises(service.DataSourceError):
+        service.get_data_manager(refresh=True)
+    # 状态接口应报告错误而非伪装成功
+    st = service.data_status()
+    assert st["is_real_data"] is False and st["using_mock"] is False and st["error"]
+    service.configure_data(source="sample", demo_mode=False)
+    service._DATA_CACHE.pop("default", None)
+
+
+def test_demo_mode_allows_mock(monkeypatch):
+    service.configure_data(source="baostock", demo_mode=True)
+    service._DATA_CACHE.pop("default", None)
+    mgr = service.get_data_manager(refresh=True)
+    assert mgr.symbols  # 演示模式下允许示例数据
+    assert service._ACTUAL["using_mock"] is True
+    service.configure_data(source="sample", demo_mode=False)
+    service._DATA_CACHE.pop("default", None)
+
+
+def test_data_check_structure(client):
+    d = client.get("/api/data/check").json()
+    for k in ["baostock_import", "baostock_login", "baostock_sample_ok",
+              "akshare_import", "akshare_sample_ok", "using_mock", "error"]:
+        assert k in d
