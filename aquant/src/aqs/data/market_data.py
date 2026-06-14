@@ -51,6 +51,29 @@ class MarketDataManager:
         mgr.load_dataset(generate_dataset(**kwargs))
         return mgr
 
+    @classmethod
+    def from_wind(
+        cls,
+        symbols,
+        start: str,
+        end: str,
+        benchmark: str = "000300.SH",
+        with_fundamentals: bool = True,
+        config: SystemConfig = DEFAULT_CONFIG,
+    ) -> "MarketDataManager":
+        """Build a manager from Wind (万得) data.
+
+        Must run on a machine with the Wind terminal installed and logged in
+        (see :mod:`aqs.data.sources.wind`).
+        """
+        from aqs.data.sources.wind import WindDataSource
+
+        src = WindDataSource()
+        ds = src.build_dataset(list(symbols), start, end, benchmark=benchmark, with_fundamentals=with_fundamentals)
+        mgr = cls(config)
+        mgr.load_dataset(ds)
+        return mgr
+
     def load_dataset(self, ds: SampleDataset) -> None:
         self._instruments = dict(ds.instruments)
         self._bars = {s: clean_bars(df) for s, df in ds.bars.items()}

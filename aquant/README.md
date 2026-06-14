@@ -102,6 +102,31 @@ class MyStrategy(Strategy):
 
 ---
 
+## 接入真实数据：Wind（万得）
+
+系统内置合成示例数据用于演示；接入真实行情只需一个数据源适配器。已提供 **Wind 适配器** `aqs/data/sources/wind.py`。
+
+> 前提：必须在**安装并登录了 Wind 金融终端**、且装好 WindPy 的机器上运行（WindPy 通过本地终端取数，
+> 账号登录在终端完成，代码里不放密码）。账号需开通相应数据/行情权限。
+
+```python
+from aqs.data.market_data import MarketDataManager
+from aqs.backtest.engine import BacktestEngine
+from aqs.strategy.templates import MultiFactor
+
+data = MarketDataManager.from_wind(
+    symbols=["600519.SH", "300750.SZ", "688981.SH"],
+    start="2021-01-01", end="2023-12-31",
+    benchmark="000300.SH",
+)
+res = BacktestEngine(data, MultiFactor(top_n=4)).run()
+```
+
+适配器自动拉取：日线 OHLCV、复权因子 `adjfactor`、停牌 `trade_status`、ST 标记 `riskwarning`、
+行业 `industry_sw`、上市/退市日、基本面 `pe_ttm/pb_lf/roe/同比`（按可知日期做 PIT），以及基准指数。
+字段做成可配置，缺权限的字段会自动跳过并告警。完整示例见 `examples/load_wind_data.py`。
+实时行情订阅（需 wsq 权限）见 `WindDataSource.subscribe_realtime`。
+
 ## 设计要点（为什么回测可信）
 
 - **避免未来函数（look-ahead）**：`MarketDataManager` 内置时间点时钟（PIT），`get_price` 不会返回 `as_of` 之后的数据；
