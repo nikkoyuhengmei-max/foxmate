@@ -170,6 +170,9 @@ def predict_universe(
     ctx = data.pit(asof) if asof is not None else _null()
 
     cur: Dict[str, dict] = {}
+    # 池化训练样本（在同一循环里累积，避免重复读取/计算特征）
+    from collections import defaultdict
+    Xh = defaultdict(list); yh = defaultdict(list); X5 = []; r5 = []
 
     with ctx:
         for sym in universe:
@@ -186,6 +189,16 @@ def predict_universe(
             close = bars["close"].astype(float)
             fmat = feats[_FEATURE_COLS]
             valid = fmat.notna().all(axis=1)
+            # 累积训练样本（特征只算一次）
+            for h in HORIZONS:
+                lab = (close.shift(-h) / close - 1.0)
+                m = valid & lab.notna()
+                if m.sum():
+                    Xh[h].append(fmat[m].values); yh[h].append((lab[m].values > 0).astype(int))
+            lab5 = (close.shift(-5) / close - 1.0)
+            m5 = valid & lab5.notna()
+            if m5.sum():
+                X5.append(fmat[m5].values); r5.append(lab5[m5].values)
             # 当前预测行（最新有效特征，无需标签）
             vrows = fmat[valid]
             if not len(vrows):
@@ -219,8 +232,14 @@ def predict_universe(
     if not cur:
         return pd.DataFrame()
 
-    # 池化训练（按 horizon 对齐）
-    models, reg5 = _train_models(cur, data, asof)
+    # 训练（使用循环中已累积的样本）
+    models = {}
+    for h in HORIZONS:
+        if Xh[h]:
+            models[h] = _fit_clf(np.vstack(Xh[h]), np.concatenate(yh[h]))
+        else:
+            models[h] = None
+    reg5 = _fit_reg(np.vstack(X5), np.concatenate(r5)) if X5 else None
 
     rows = []
     for sym, c in cur.items():
