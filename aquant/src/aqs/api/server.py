@@ -95,6 +95,22 @@ def create_app() -> "FastAPI":
     def forecast(symbol: str = Query(...), horizon: int = 5) -> Dict[str, Any]:
         return service.forecast_symbol(symbol, horizon=horizon)
 
+    @app.get("/api/stocks/search")
+    def stocks_search(q: str = "", limit: int = 20) -> List[dict]:
+        return service.search_stocks(q, limit=limit)
+
+    @app.get("/api/watchlist")
+    def get_watchlist() -> List[dict]:
+        return service.watchlist()
+
+    @app.post("/api/watchlist")
+    def add_watchlist(payload: Dict[str, Any]) -> Dict[str, Any]:
+        return service.add_to_watchlist(payload.get("symbol", ""))
+
+    @app.delete("/api/watchlist")
+    def del_watchlist(symbol: str = Query(...)) -> Dict[str, Any]:
+        return service.remove_from_watchlist(symbol)
+
     @app.get("/api/screen")
     def screen(top_n: int = 8, asof: Optional[str] = None) -> Dict[str, Any]:
         return service.screen_stocks(top_n=top_n, asof=asof)

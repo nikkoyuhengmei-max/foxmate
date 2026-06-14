@@ -114,12 +114,23 @@
 
   <div class="grid panels">
     <div class="card">
-      <h3>AI 走势分析 / 预测</h3>
-      <div class="controls" style="margin-bottom:10px">
-        <select id="fcSymbol"></select>
-        <button class="secondary" onclick="runForecast()">分析并预测</button>
+      <h3>AI 走势分析 / 预测 <span class="tag">全 A 股可搜</span></h3>
+      <div class="controls" style="margin-bottom:8px">
+        <input id="fcInput" list="stockSug" placeholder="输入代码或名称，如 600519.SH / 贵州茅台"
+               style="flex:1;min-width:220px;background:var(--panel);color:var(--txt);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:13px"
+               oninput="onSearchInput()" onkeydown="if(event.key==='Enter')runForecast()" />
+        <datalist id="stockSug"></datalist>
+        <button class="secondary" onclick="searchStocks()">搜索</button>
       </div>
-      <div id="forecast" class="muted">选择股票后点击「分析并预测」。预测仅供研究参考，不构成投资建议。</div>
+      <div class="controls" style="margin-bottom:10px">
+        <select id="fcQuick" onchange="quickSelect()" style="flex:1;min-width:200px">
+          <option value="">常用 / 最近筛选 / 自选股…</option>
+        </select>
+        <button onclick="runForecast()">分析并预测</button>
+        <button class="secondary" onclick="addWatch()">加入自选</button>
+        <button class="secondary" onclick="runForecast()">刷新行情</button>
+      </div>
+      <div id="forecast" class="muted">输入代码或名称后点击「分析并预测」。预测仅供研究参考，不构成投资建议。</div>
     </div>
     <div class="card">
       <h3>系统日志 (当前会话)</h3>
@@ -142,9 +153,45 @@ async function init(){
   for(const [k,name] of Object.entries(strat)){ const o=document.createElement('option'); o.value=k; o.textContent=name+' ('+k+')'; sel.appendChild(o); }
   sel.value = 'multi_factor';
   await loadStatus();
-  await loadSymbols();
+  await loadWatchlist();
   await loadTrades();
   log('仪表盘已加载');
+}
+
+let lastScreenPicks = [];   // 最近选股结果，用于快捷下拉
+let watchItems = [];
+let searchItems = [];
+
+function rebuildQuick(){
+  const q=document.getElementById('fcQuick');
+  q.innerHTML='<option value="">常用 / 最近筛选 / 自选股…</option>';
+  const grp=(label,items)=>{ if(!items.length)return; const og=document.createElement('optgroup'); og.label=label;
+    items.forEach(it=>{const o=document.createElement('option'); o.value=it.symbol; o.textContent=it.symbol+' '+(it.name||''); og.appendChild(o);}); q.appendChild(og); };
+  grp('最近筛选结果', lastScreenPicks.map(p=>({symbol:p.symbol,name:p.name})));
+  grp('自选股', watchItems);
+  grp('搜索结果', searchItems);
+}
+
+async function loadWatchlist(){ watchItems = await api('/api/watchlist'); rebuildQuick(); }
+
+let searchTimer=null;
+function onSearchInput(){ clearTimeout(searchTimer); searchTimer=setTimeout(searchStocks, 250); }
+async function searchStocks(){
+  const q=document.getElementById('fcInput').value.trim();
+  if(!q){return;}
+  const res=await api('/api/stocks/search?q='+encodeURIComponent(q)+'&limit=20');
+  searchItems=res||[];
+  const dl=document.getElementById('stockSug'); dl.innerHTML='';
+  searchItems.forEach(s=>{const o=document.createElement('option'); o.value=s.symbol; o.label=(s.name||'')+' '+(s.industry||''); dl.appendChild(o);});
+  rebuildQuick();
+}
+function quickSelect(){ const v=document.getElementById('fcQuick').value; if(v) document.getElementById('fcInput').value=v; }
+
+async function addWatch(){
+  const q=document.getElementById('fcInput').value.trim(); if(!q){return;}
+  const r=await api('/api/watchlist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:q})});
+  log('加入自选: '+q+' → '+(r.message||''));
+  await loadWatchlist();
 }
 
 async function loadStatus(){
@@ -166,18 +213,12 @@ async function loadStatus(){
   return s;
 }
 
-async function loadSymbols(){
-  const syms = await api('/api/symbols');
-  const fc = document.getElementById('fcSymbol'); fc.innerHTML='';
-  syms.forEach(s=>{ const o=document.createElement('option'); o.value=s.symbol; o.textContent=s.symbol+' '+(s.name||''); fc.appendChild(o); });
-}
-
 async function refreshAll(){
   const btn=document.getElementById('refreshBtn'); btn.disabled=true; btn.textContent='刷新中…';
   log('开始刷新真实数据 (screen + backtest + forecast)…');
   try{
     const r = await api('/api/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({strategy:document.getElementById('strategy').value})});
-    await loadStatus(); await loadSymbols(); await loadTrades();
+    await loadStatus(); await loadWatchlist(); await loadTrades();
     if(r.backtest_metrics) renderKpis(r.backtest_metrics);
     if(r.screen) renderScreen(r.screen);
     if(r.forecast) renderForecast(r.forecast);
@@ -208,6 +249,7 @@ async function runScreen(){
 
 function renderScreen(res){
   const picks=res.picks||[];
+  lastScreenPicks = picks; rebuildQuick();
   if(!picks.length){document.getElementById('screen').innerHTML='<div class="empty">无结果</div>';return;}
   let html='<table><thead><tr><th>代码</th><th>名称</th><th>行业</th><th>综合分</th><th>20日</th><th>120日</th><th>RSI</th></tr></thead><tbody>';
   picks.forEach(p=>{ html+=`<tr><td>${p.symbol}</td><td>${p.name||''}</td><td>${p.industry||'未分类'}</td>
@@ -276,24 +318,29 @@ async function loadTrades(){
 }
 
 async function runForecast(){
-  const sym=document.getElementById('fcSymbol').value;
+  const sym=document.getElementById('fcInput').value.trim() || document.getElementById('fcQuick').value;
+  if(!sym){document.getElementById('forecast').innerHTML='<span class="neg">请输入股票代码或名称</span>';return;}
   const el=document.getElementById('forecast'); el.innerHTML='<span class="loading">分析中…</span>';
+  log('预测: '+sym);
   const r=await api('/api/forecast?symbol='+encodeURIComponent(sym));
   renderForecast(r);
-  log('预测完成: '+sym);
 }
 
 function renderForecast(r){
   const el=document.getElementById('forecast');
-  if(r.error){el.innerHTML='<span class="neg">'+r.error+'</span>';return;}
+  if(r.error){el.innerHTML='<div class="neg" style="font-weight:600">'+r.error+'</div>';return;}
   const s=r.stats||{}, f=r.forecast||{}, d=r.data||{};
   let html=`<table>
+    <tr><td>股票代码</td><td>${f.symbol||r.symbol||'-'}</td></tr>
+    <tr><td>股票名称</td><td>${r.name||'-'}</td></tr>
+    <tr><td>最新行情日期</td><td>${d.latest_data_date||'-'}</td></tr>
     <tr><td>最新价</td><td>${s.last_price}</td></tr>
     <tr><td>区间收益</td><td class="${cls(s.lookback_return||0)}">${fmtPct(s.lookback_return||0)}</td></tr>
-    <tr><td>趋势</td><td>${s.trend||'-'}</td></tr>
+    <tr><td>最大回撤</td><td class="neg">${fmtPct(s.max_drawdown||0)}</td></tr>
+    <tr><td>趋势判断</td><td>${s.trend||'-'}</td></tr>
     <tr><td>未来${f.horizon||5}日上涨概率</td><td class="${(f.prob_up||0)>=0.5?'pos':'neg'}">${f.prob_up!==undefined?fmtPct(f.prob_up):'—'}</td></tr>
     <tr><td>方向判断</td><td>${f.direction||'—'}</td></tr>
-    <tr><td>样本外准确率</td><td>${f.test_accuracy!==undefined?fmtPct(f.test_accuracy):'—'} (${f.model||'-'})</td></tr>
+    <tr><td>模型准确率(样本外)</td><td>${f.test_accuracy!==undefined?fmtPct(f.test_accuracy):'—'} (${f.model||'-'})</td></tr>
   </table>`;
   if(d.training_start){
     html+=`<div class="muted" style="font-size:12px;margin-top:8px">训练区间：${d.training_start} → ${d.training_end}<br>最新行情日期：${d.latest_data_date}</div>`;

@@ -364,11 +364,72 @@ def run_paper(
     }
 
 
+def _manager_for_symbol(symbol: str, config: SystemConfig) -> Optional[MarketDataManager]:
+    """返回包含该标的的数据管理器。
+
+    若该标的不在已加载股票池中，则按当前数据源临时拉取它（缓存复用）。
+    """
+    mdm = get_data_manager(config)
+    if symbol in mdm.symbols:
+        return mdm
+    src = DATA_CFG["source"]
+    if src not in ("baostock", "akshare"):
+        return None  # 示例数据无法获取任意股票
+    try:
+        common = dict(
+            symbols=[symbol], start=DATA_CFG["start"], end=DATA_CFG["end"],
+            benchmark=DATA_CFG["benchmark"], cache_dir=DATA_CFG["cache_dir"],
+            refresh=False, config=config,
+        )
+        m = MarketDataManager.from_baostock(**common) if src == "baostock" else MarketDataManager.from_akshare(**common)
+        return m if symbol in m.symbols else None
+    except Exception as exc:  # noqa: BLE001
+        print(f"[forecast] 拉取 {symbol} 数据失败：{exc}")
+        return None
+
+
+def search_stocks(q: str, limit: int = 20) -> List[dict]:
+    from aqs.data import directory
+
+    return directory.search(q, limit=limit)
+
+
+def watchlist() -> List[dict]:
+    from aqs.data import directory
+
+    return directory.watchlist()
+
+
+def add_to_watchlist(query: str) -> dict:
+    from aqs.data import directory
+
+    return directory.add_watchlist(query)
+
+
+def remove_from_watchlist(symbol: str) -> dict:
+    from aqs.data import directory
+
+    return directory.remove_watchlist(symbol)
+
+
 def forecast_symbol(symbol: str, horizon: int = 5, config: SystemConfig = DEFAULT_CONFIG) -> Dict[str, Any]:
     from aqs.ml.forecast import analyze_and_forecast
+    from aqs.data import directory
 
-    mdm = get_data_manager(config)
-    res = analyze_and_forecast(mdm, symbol, horizon=horizon)
+    # 支持输入代码或名称（如 "贵州茅台" / "600519" / "600519.SH"）
+    resolved = directory.resolve(symbol)
+    if not resolved:
+        return {"symbol": symbol, "error": "未找到该股票代码或名称"}
+
+    mdm = _manager_for_symbol(resolved, config)
+    if mdm is None:
+        return {"symbol": resolved, "error": "无法获取该股票数据（示例数据模式仅支持内置标的，请切换到 Baostock/AkShare）"}
+
+    res = analyze_and_forecast(mdm, resolved, horizon=horizon)
+    # 补充名称
+    inst = mdm.instrument(resolved)
+    res["name"] = (inst.name if inst and inst.name else directory.name_of(resolved))
+    symbol = resolved
 
     # 附加数据区间信息 + 数据是否陈旧的警告
     try:
