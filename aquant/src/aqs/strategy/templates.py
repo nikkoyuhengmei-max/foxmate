@@ -448,8 +448,16 @@ class _ScreenStrategy(Strategy):
                 ctx.order_target_percent(sym, w, tag=self.name)
 
 
+class ShortStrength(_ScreenStrategy):
+    name = "短线强势股"
+    profile_key = "short_strength"
+
+    def __init__(self, top_n: int = 5, rebalance: str = "weekly") -> None:
+        super().__init__(top_n=top_n, rebalance=rebalance)
+
+
 class ShortMomentum(_ScreenStrategy):
-    name = "短线强势选股"
+    name = "短线动量选股"
     profile_key = "short_momentum"
 
     def __init__(self, top_n: int = 5, rebalance: str = "weekly") -> None:
@@ -474,10 +482,11 @@ class QualityValue(_ScreenStrategy):
 
 TEMPLATES = {
     # —— 核心策略（与首页选股画像一致）——
-    "short_momentum": ShortMomentum,
+    "short_strength": ShortStrength,
     "trend_quality": TrendQuality,
     "quality_value": QualityValue,
     # —— 高级 / 实验策略 ——
+    "short_momentum": ShortMomentum,
     "buy_and_hold": BuyAndHold,
     "double_ma": DoubleMA,
     "low_volatility": LowVolatility,
@@ -492,6 +501,6 @@ TEMPLATES = {
 }
 
 # 核心策略（首页默认展示）与高级/实验策略分类
-CORE_STRATEGIES = ["short_momentum", "trend_quality", "quality_value"]
+CORE_STRATEGIES = ["short_strength", "trend_quality", "quality_value"]
 ADVANCED_STRATEGIES = [k for k in TEMPLATES if k not in CORE_STRATEGIES]
-DEFAULT_STRATEGY = "short_momentum"
+DEFAULT_STRATEGY = "short_strength"

@@ -79,7 +79,8 @@
           <option value="watchlist">自选股</option>
         </select>
       </label>
-      <label>数量 <input id="topN" type="number" value="10" min="5" max="100" style="width:70px"></label>
+      <label>数量 <input id="topN" type="number" value="20" min="5" max="100" style="width:70px"></label>
+      <label class="sub"><input type="checkbox" id="exclBlue" checked onchange="runScreen()"> 排除超大市值慢速蓝筹</label>
       <button onclick="runScreen()">运行选股</button>
       <span id="msg" class="sub"></span>
     </div>
@@ -88,7 +89,7 @@
 
   <!-- C. 今日策略筛选结果 -->
   <div class="card">
-    <h3 id="screenTitle">今日策略筛选结果 Top 10 <span class="tag" id="screenMeta"></span></h3>
+    <h3 id="screenTitle">今日短线强势股 Top 20 <span class="tag" id="screenMeta"></span></h3>
     <div class="scroll" id="screen"><div class="empty">选择策略后点击「运行选股」</div></div>
   </div>
 
@@ -200,27 +201,30 @@ async function loadStatus(){
   b.className=real?'':'demo-banner';
 }
 
+function stratName(){const e=(catalog?[...catalog.core,...catalog.advanced]:[]).find(x=>x.key===currentStrategy);return e?e.name:currentStrategy;}
 async function runScreen(){
-  const top=document.getElementById('topN').value||10;
+  const top=document.getElementById('topN').value||20;
   const uni=document.getElementById('universe').value;
+  const exb=document.getElementById('exclBlue').checked;
   document.getElementById('screen').innerHTML='<div class="empty">选股中…'+(uni?'（加载股票池，首次较慢）':'')+'</div>';
-  document.getElementById('screenTitle').firstChild.nodeValue=`今日策略筛选结果 Top ${top} `;
-  log('运行选股：'+currentStrategy+' Top'+top+(uni?(' 股票池='+uni):''));
-  const res=await api(`/api/screen?strategy=${currentStrategy}&top_n=${top}&universe=${encodeURIComponent(uni)}`);
+  document.getElementById('screenTitle').firstChild.nodeValue=`今日${stratName()} Top ${top} `;
+  log('运行选股：'+currentStrategy+' Top'+top+(uni?(' 股票池='+uni):'')+(exb?' 排除慢蓝筹':''));
+  const res=await api(`/api/screen?strategy=${currentStrategy}&top_n=${top}&universe=${encodeURIComponent(uni)}&exclude_slow_blue_chip=${exb}`);
   renderScreen(res); await loadStatus();
   runBacktest();   // 选股后自动加载该策略历史表现
 }
-function sigClass(s){return s==='买入候选'?'sig-buy':s==='观察'?'sig-obs':'sig-ex';}
+function sigClass(s){return (s==='强势观察'||s==='买入候选')?'sig-buy':(s==='观察'||s==='回踩观察')?'sig-obs':(s==='过热谨慎')?'neg':'sig-ex';}
 function renderScreen(res){
   const picks=res.picks||[]; lastScreenPicks=picks; rebuildQuick();
   document.getElementById('screenMeta').textContent=`${res.strategy_name||''} · asof ${res.asof||'-'} · ${res.is_real_data?'真实数据':'示例数据'}`;
-  if(!picks.length){document.getElementById('screen').innerHTML='<div class="empty">无结果</div>';return;}
-  let h='<table><thead><tr><th>排名</th><th class="lft">股票</th><th class="lft">代码</th><th class="lft">行业</th><th>最新价</th><th>5日涨幅</th><th>20日涨幅</th><th>成交额</th><th>RSI</th><th>综合评分</th><th class="lft">信号</th><th class="lft">原因</th><th class="lft">风险</th><th class="lft">操作</th></tr></thead><tbody>';
-  picks.forEach(p=>{ h+=`<tr>
+  if(!picks.length){document.getElementById('screen').innerHTML='<div class="empty">无符合条件的强势股（可放宽条件或更换股票池）</div>';return;}
+  let h='<table><thead><tr><th>排名</th><th class="lft">名称</th><th class="lft">代码</th><th class="lft">行业</th><th>最新价</th><th>3日</th><th>5日</th><th>10日</th><th>量能放大</th><th>RSI</th><th>突破</th><th>综合评分</th><th class="lft">信号</th><th class="lft">原因</th><th class="lft">风险</th><th class="lft">操作</th></tr></thead><tbody>';
+  picks.forEach(p=>{ const bo=p.breakout_20d?'<span class="pos">▲新高</span>':'—';
+    h+=`<tr>
     <td>${p.rank}</td><td class="lft">${p.name||''}</td><td class="lft">${p.symbol}</td><td class="lft">${p.industry||'未分类'}</td>
-    <td>${p.close}</td><td class="${cls(p.ret_5d||0)}">${fmtPct(p.ret_5d||0)}</td>
-    <td class="${cls(p.ret_20d||0)}">${fmtPct(p.ret_20d||0)}</td>
-    <td>${fmtAmt(p.amount)}</td><td>${(p.rsi||0).toFixed(0)}</td><td>${(p.score||0).toFixed(2)}</td>
+    <td>${p.close}</td><td class="${cls(p.ret_3d||0)}">${fmtPct(p.ret_3d||0)}</td><td class="${cls(p.ret_5d||0)}">${fmtPct(p.ret_5d||0)}</td>
+    <td class="${cls(p.ret_10d||0)}">${fmtPct(p.ret_10d||0)}</td><td>${(p.amount_ratio||0).toFixed(1)}x</td>
+    <td>${(p.rsi||0).toFixed(0)}</td><td>${bo}</td><td>${(p.score||0).toFixed(2)}</td>
     <td class="lft ${sigClass(p.signal)}">${p.signal||''}</td>
     <td class="lft reason">${p.reason||''}</td><td class="lft reason">${p.risk||''}</td>
     <td class="lft row-actions">

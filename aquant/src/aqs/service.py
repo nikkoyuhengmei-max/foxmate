@@ -140,6 +140,33 @@ def _manager_for_universe(syms: List[str], config: SystemConfig):
         return mdm, [s for s in syms if s in mdm.symbols]
 
 
+_MKTCAP_CACHE: Dict[str, Dict[str, float]] = {}
+
+
+def _get_market_caps(symbols: List[str]) -> Optional[Dict[str, float]]:
+    """尽力获取市值（元）。优先 AkShare 全市场快照；失败则返回 None（市值显示 N/A）。"""
+    if "all" in _MKTCAP_CACHE:
+        caps = _MKTCAP_CACHE["all"]
+        return {s: caps[s] for s in symbols if s in caps} or None
+    try:
+        import akshare as ak  # type: ignore
+
+        spot = ak.stock_zh_a_spot_em()
+        caps: Dict[str, float] = {}
+        for _, r in spot.iterrows():
+            code = str(r.get("代码", ""))
+            mc = r.get("总市值")
+            if code and pd.notna(mc):
+                suffix = "SH" if code.startswith(("6", "5", "9")) else "SZ"
+                caps[f"{code}.{suffix}"] = float(mc)
+        if caps:
+            _MKTCAP_CACHE["all"] = caps
+            return {s: caps[s] for s in symbols if s in caps} or None
+    except Exception as exc:  # noqa: BLE001
+        print(f"[mktcap] 获取市值失败（按 N/A 处理）：{exc}")
+    return None
+
+
 def get_data_manager(config: SystemConfig = DEFAULT_CONFIG, refresh: bool = False) -> MarketDataManager:
     if not refresh and "default" in _DATA_CACHE:
         return _DATA_CACHE["default"]
@@ -257,7 +284,7 @@ def _ensure_outputs() -> str:
 
 
 def run_backtest(
-    strategy: str = "short_momentum",
+    strategy: str = "short_strength",
     params: Optional[dict] = None,
     start: Optional[str] = None,
     end: Optional[str] = None,
@@ -550,7 +577,7 @@ def _write_trades(trades, mode: str) -> Optional[str]:
     return path
 
 
-def stock_detail(symbol: str, strategy: str = "short_momentum", config: SystemConfig = DEFAULT_CONFIG) -> Dict[str, Any]:
+def stock_detail(symbol: str, strategy: str = "short_strength", config: SystemConfig = DEFAULT_CONFIG) -> Dict[str, Any]:
     """单只股票的策略解读：为何被选中、关键因子、风险、近期趋势与流动性。"""
     from aqs.data import directory
     from aqs.research.screener import Screener, ScreenConfig, PROFILES
@@ -563,7 +590,7 @@ def stock_detail(symbol: str, strategy: str = "short_momentum", config: SystemCo
     if mdm is None:
         return {"symbol": resolved, "error": "无法获取该股票数据（请切换到 Baostock/AkShare）"}
 
-    profile = strategy if strategy in PROFILES else "short_momentum"
+    profile = strategy if strategy in PROFILES else "short_strength"
     universe = mdm.symbols if resolved in mdm.symbols else [resolved]
     df = Screener(ScreenConfig(exclude_st=False), profile=profile).screen(mdm, universe=universe, top_n=len(universe))
     if df.empty or resolved not in df.index:
@@ -595,7 +622,7 @@ def stock_detail(symbol: str, strategy: str = "short_momentum", config: SystemCo
 
 
 def refresh_real_data(
-    strategy: str = "short_momentum",
+    strategy: str = "short_strength",
     forecast_sym: str = "600519.SH",
     top_n: int = 20,
 ) -> Dict[str, Any]:
@@ -614,18 +641,20 @@ def refresh_real_data(
 
 
 def screen_stocks(
-    strategy: str = "short_momentum",
+    strategy: str = "short_strength",
     top_n: int = 20,
     universe=None,
     asof: Optional[str] = None,
     min_amount: float = 0.0,
     exclude_st: bool = True,
+    exclude_slow_blue_chip: bool = True,
+    max_market_cap: float = 3000e8,
     auction: Optional[dict] = None,
     save: bool = False,
     config: SystemConfig = DEFAULT_CONFIG,
 ) -> dict:
     """按所选策略画像筛选 Top N 候选股（含信号/选中原因/风险提示）。"""
-    from aqs.research.screener import Screener, ScreenConfig, PROFILES
+    from aqs.research.screener import Screener, ScreenConfig, PROFILES, ShortStrengthProfile
 
     if universe is not None and str(universe) not in ("", "default", "all"):
         mdm, syms = _manager_for_universe(resolve_universe(universe), config)
@@ -634,8 +663,17 @@ def screen_stocks(
         syms = list(mdm.symbols)
 
     cfg = ScreenConfig(exclude_st=exclude_st, min_amount=min_amount)
-    profile = strategy if strategy in PROFILES else "short_momentum"
-    df = Screener(cfg, profile=profile).screen(mdm, universe=syms or None, asof=asof, top_n=top_n, auction=auction)
+    profile = strategy if strategy in PROFILES else "short_strength"
+    # 短线强势：支持排除超大市值慢速蓝筹（尽力获取市值，取不到则按 N/A 跳过该过滤）
+    market_caps = None
+    prof_obj = profile
+    if profile == "short_strength":
+        prof_obj = ShortStrengthProfile(exclude_slow_blue_chip=exclude_slow_blue_chip,
+                                        max_market_cap=max_market_cap)
+        if exclude_slow_blue_chip:
+            market_caps = _get_market_caps(syms)
+    df = Screener(cfg, profile=prof_obj).screen(
+        mdm, universe=syms or None, asof=asof, top_n=top_n, auction=auction, market_caps=market_caps)
 
     sessions = mdm.trading_dates(end=asof) if asof else mdm.trading_dates()
     asof_date = asof or (str(sessions[-1].date()) if len(sessions) else None)

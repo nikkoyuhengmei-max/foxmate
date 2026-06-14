@@ -104,20 +104,24 @@ def cmd_paper(args) -> int:
 
 def cmd_screen(args) -> int:
     res = service.screen_stocks(
-        strategy=getattr(args, "strategy", "short_momentum"),
+        strategy=getattr(args, "strategy", "short_strength"),
         top_n=args.top, asof=args.asof, min_amount=getattr(args, "min_amount", 0.0),
-        exclude_st=getattr(args, "exclude_st", True), save=getattr(args, "save", False),
+        exclude_st=getattr(args, "exclude_st", True),
+        exclude_slow_blue_chip=getattr(args, "exclude_slow_blue_chip", True),
+        max_market_cap=getattr(args, "max_market_cap", 3000e8),
+        save=getattr(args, "save", False),
     )
     flag = "真实数据" if res.get("is_real_data") else "示例数据(回退)"
-    print(f"\n【{res.get('strategy_name')}】选股结果 (asof={res['asof']}, Top {res['top_n']}, "
-          f"数据源={res.get('source')}/{flag}):")
-    print("-" * 96)
-    print(f"{'#':<3}{'代码':<11}{'名称':<10}{'行业':<8}{'最新价':>8}{'5日':>7}{'20日':>7}{'RSI':>5}{'评分':>7}  {'信号':<8}{'选中原因'}")
+    print(f"\n【{res.get('strategy_name')}】Top {res['top_n']} (asof={res['asof']}, 数据源={res.get('source')}/{flag}):")
+    print("-" * 104)
+    print(f"{'#':<3}{'代码':<11}{'名称':<10}{'行业':<7}{'最新价':>8}{'3日':>6}{'5日':>6}{'10日':>6}{'量比':>6}{'RSI':>5}{'评分':>7}  {'信号':<8}{'原因'}")
     for p in res["picks"]:
-        print(f"{p.get('rank',''):<3}{p.get('symbol',''):<11}{str(p.get('name','')):<10}{str(p.get('industry','')):<8}"
-              f"{p.get('close',0):>8.2f}{p.get('ret_5d',0)*100:>6.1f}%{p.get('ret_20d',0)*100:>6.1f}%"
-              f"{p.get('rsi',0):>5.0f}{p.get('score',0):>7.2f}  {str(p.get('signal','')):<8}{str(p.get('reason',''))}")
-    print("-" * 96)
+        bo = "▲" if p.get("breakout_20d") else " "
+        print(f"{p.get('rank',''):<3}{p.get('symbol',''):<11}{str(p.get('name','')):<10}{str(p.get('industry','')):<7}"
+              f"{p.get('close',0):>8.2f}{(p.get('ret_3d') or 0)*100:>5.1f}%{(p.get('ret_5d') or 0)*100:>5.1f}%"
+              f"{(p.get('ret_10d') or 0)*100:>5.1f}%{(p.get('amount_ratio') or 0):>5.1f}x{p.get('rsi',0):>5.0f}"
+              f"{p.get('score',0):>7.2f}  {str(p.get('signal','')):<8}{bo}{str(p.get('reason',''))}")
+    print("-" * 104)
     if res.get("saved"):
         print(f"已导出: {res['saved']}")
     print(res["disclaimer"])
@@ -172,7 +176,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("quality", help="数据质量报告", parents=[data]).set_defaults(func=cmd_quality)
 
     bt = sub.add_parser("backtest", help="运行回测", parents=[data])
-    bt.add_argument("--strategy", default="short_momentum")
+    bt.add_argument("--strategy", default="short_strength")
     bt.add_argument("--params", help="JSON 参数, 如 '{\"top_n\":5}'")
     bt.add_argument("--fill", default="next_open", choices=["next_open", "close"])
     bt.add_argument("--rebalance", choices=["daily", "weekly", "monthly"], help="调仓频率")
@@ -187,13 +191,17 @@ def build_parser() -> argparse.ArgumentParser:
     pa.set_defaults(func=cmd_paper)
 
     sc = sub.add_parser("screen", help="快速筛选 Top N 候选股", parents=[data])
-    sc.add_argument("--strategy", default="short_momentum",
-                    help="选股策略: short_momentum/trend_quality/quality_value")
+    sc.add_argument("--strategy", default="short_strength",
+                    help="选股策略: short_strength/trend_quality/quality_value")
     sc.add_argument("--top", type=int, default=20)
     sc.add_argument("--asof", help="筛选时点 (YYYY-MM-DD)，默认最新")
     sc.add_argument("--min-amount", dest="min_amount", type=float, default=0.0, help="最小近20日日均成交额(元)")
     sc.add_argument("--exclude-st", dest="exclude_st", action="store_true", default=True, help="排除 ST (默认开)")
     sc.add_argument("--include-st", dest="exclude_st", action="store_false", help="包含 ST")
+    sc.add_argument("--max-market-cap", dest="max_market_cap", type=float, default=3000e8,
+                    help="超大市值阈值(元), 与低涨幅共同判定慢速蓝筹, 默认3000亿")
+    sc.add_argument("--keep-blue-chip", dest="exclude_slow_blue_chip", action="store_false",
+                    default=True, help="不排除超大市值慢速蓝筹")
     sc.add_argument("--save", action="store_true", help="导出结果到 outputs/")
     sc.set_defaults(func=cmd_screen)
 

@@ -74,6 +74,104 @@ class ScreenProfile:
         return score.apply(lab)
 
 
+class ShortStrengthProfile(ScreenProfile):
+    """短线强势股：近期涨幅强 + 量能放大 + 突破均线 + 不过热 + 流动性/回撤可控。
+
+    目标是 1-10 天值得重点观察的强势股，而非慢速大盘蓝筹。
+    """
+
+    key = "short_strength"
+    name = "短线强势股"
+    horizon = "1-10 天短线"
+
+    def __init__(
+        self,
+        ret5_min: float = 0.03,
+        amount_ratio_min: float = 1.3,
+        rsi_min: float = 50.0,
+        rsi_max: float = 85.0,
+        max_recent_dd: float = -0.12,     # 近5日最大回撤下限
+        min_amount: float = 5e7,          # 流动性下限（近20日日均成交额）
+        exclude_slow_blue_chip: bool = True,
+        max_market_cap: float = 3000e8,   # 超大市值阈值
+        slow_ret5: float = 0.05,          # 大市值但5日涨幅低于此 → 慢票
+    ) -> None:
+        self.ret5_min = ret5_min
+        self.amount_ratio_min = amount_ratio_min
+        self.rsi_min = rsi_min
+        self.rsi_max = rsi_max
+        self.max_recent_dd = max_recent_dd
+        self.min_amount = min_amount
+        self.exclude_slow_blue_chip = exclude_slow_blue_chip
+        self.max_market_cap = max_market_cap
+        self.slow_ret5 = slow_ret5
+
+    def evaluate(self, df: pd.DataFrame) -> pd.DataFrame:
+        out = df.copy()
+        trend_strength = (out["above_ma5"].astype(float) + out["above_ma10"].astype(float)
+                          + out["above_ma20"].astype(float)) / 3.0
+        # 综合评分：3日20% 5日25% 量能20% 趋势15% 突破10% 风控10%
+        score = (
+            0.20 * _z(out["ret_3d"]) + 0.25 * _z(out["ret_5d"])
+            + 0.20 * _z(out["amount_ratio"]) + 0.15 * trend_strength
+            + 0.10 * out["breakout_20d"].astype(float)
+            - 0.10 * _z(out["risk_score"])
+        )
+        out["score"] = score
+
+        # —— 硬性排除 ——
+        excl = (
+            (~out["above_ma5"]) | (~out["above_ma10"])
+            | (out["ret_5d"] < self.ret5_min)
+            | (out["amount_ratio"] < self.amount_ratio_min)
+            | (out["rsi"] < self.rsi_min)
+            | (out["max_drawdown_5d"] < self.max_recent_dd)
+            | (out["amount"] < self.min_amount)
+            | (out["ret_3d"] < -0.10)                 # 排除连续大跌
+            | out["is_st"].astype(bool)
+        )
+        if self.exclude_slow_blue_chip:
+            slow = out["market_cap"].notna() & (out["market_cap"] > self.max_market_cap) & (out["ret_5d"] < self.slow_ret5)
+            excl = excl | slow
+
+        def signal(r):
+            if excl.loc[r.name]:
+                return "排除"
+            if r["rsi"] > self.rsi_max:
+                return "过热谨慎"
+            if r["ret_3d"] < 0 and r["above_ma10"] and r["ret_20d"] > 0:
+                return "回踩观察"
+            return "强势观察"
+
+        out["signal"] = out.apply(signal, axis=1)
+        out["reason"] = out.apply(self._reason, axis=1)
+        out["risk"] = out.apply(self._risk, axis=1)
+        # 排除项分数压到最低，确保不排在前面
+        out.loc[excl, "score"] = out["score"].min() - 1
+        return out
+
+    @staticmethod
+    def _reason(r) -> str:
+        p = []
+        if pd.notna(r["ret_5d"]) and r["ret_5d"] > 0: p.append(f"5日+{r['ret_5d']*100:.1f}%")
+        if pd.notna(r["ret_3d"]) and r["ret_3d"] > 0: p.append(f"3日+{r['ret_3d']*100:.1f}%")
+        if r["amount_ratio"] > 1.3: p.append(f"量能放大{r['amount_ratio']:.1f}x")
+        if r["breakout_20d"]: p.append("突破20日新高")
+        if r["above_ma5"] and r["above_ma10"]: p.append("站上MA5/MA10")
+        return "，".join(p) or "强势特征一般"
+
+    @staticmethod
+    def _risk(r) -> str:
+        p = []
+        if r["rsi"] > 80: p.append("RSI偏高,短期过热")
+        if r["max_drawdown_5d"] < -0.08: p.append("近5日回撤较大")
+        if r["amplitude_5d"] > 0.25: p.append("振幅大,波动剧烈")
+        if r["amount"] < 5e7: p.append("成交额偏低")
+        if r.get("is_st"): p.append("ST风险")
+        if pd.notna(r.get("market_cap")) and r["market_cap"] > 3000e8: p.append("超大市值,弹性偏弱")
+        return "，".join(p) or "风险可控"
+
+
 class ShortMomentumProfile(ScreenProfile):
     key = "short_momentum"
     name = "短线强势选股"
@@ -203,7 +301,7 @@ class QualityValueProfile(ScreenProfile):
 
 
 PROFILES: Dict[str, ScreenProfile] = {
-    p.key: p for p in [ShortMomentumProfile(), TrendQualityProfile(), QualityValueProfile()]
+    p.key: p for p in [ShortStrengthProfile(), TrendQualityProfile(), QualityValueProfile(), ShortMomentumProfile()]
 }
 
 
@@ -212,9 +310,9 @@ class Screener:
     def __init__(self, config: Optional[ScreenConfig] = None, profile=None) -> None:
         self.cfg = config or ScreenConfig()
         if profile is None:
-            self.profile = PROFILES["short_momentum"]
+            self.profile = PROFILES["short_strength"]
         elif isinstance(profile, str):
-            self.profile = PROFILES.get(profile, PROFILES["short_momentum"])
+            self.profile = PROFILES.get(profile, PROFILES["short_strength"])
         else:
             self.profile = profile
 
@@ -225,6 +323,7 @@ class Screener:
         asof=None,
         top_n: int = 20,
         auction: Optional[Dict[str, Dict[str, float]]] = None,
+        market_caps: Optional[Dict[str, float]] = None,
     ) -> pd.DataFrame:
         universe = list(universe) if universe else list(data.symbols)
         asof = pd.Timestamp(asof) if asof is not None else None
@@ -233,7 +332,7 @@ class Screener:
         rows = []
         with ctx:
             for sym in universe:
-                row = self._features(data, sym, auction)
+                row = self._features(data, sym, auction, market_caps)
                 if row is not None:
                     rows.append(row)
 
@@ -244,12 +343,13 @@ class Screener:
         df = df.sort_values("score", ascending=False)
         df.insert(0, "rank", range(1, len(df) + 1))
 
-        front = ["rank", "name", "industry", "close", "ret_5d", "ret_20d", "ret_60d",
-                 "amount", "rsi", "score", "signal", "reason", "risk"]
+        front = ["rank", "name", "industry", "close", "ret_3d", "ret_5d", "ret_10d", "ret_20d",
+                 "ret_60d", "amount", "amount_ratio", "breakout_20d", "rsi", "score",
+                 "signal", "reason", "risk"]
         cols = [c for c in front if c in df.columns] + [c for c in df.columns if c not in front]
         return df[cols].head(top_n).round(4)
 
-    def _features(self, data, sym: str, auction):
+    def _features(self, data, sym: str, auction, market_caps=None):
         from aqs.data.industry import industry_of
 
         inst = data.instrument(sym)
@@ -271,6 +371,7 @@ class Screener:
         vol = bars["volume"].astype(float)
         amt = bars["amount"].astype(float) if "amount" in bars else (close * vol)
         last = float(close.iloc[-1])
+        amount5 = float(amt.tail(5).mean())
         amount20 = float(amt.tail(20).mean())
         if self.cfg.min_amount and amount20 < self.cfg.min_amount:
             return None
@@ -278,27 +379,48 @@ class Screener:
         def ret(n):
             return float(close.iloc[-1] / close.iloc[-1 - n] - 1.0) if len(close) > n else np.nan
 
+        ma5 = float(close.tail(5).mean())
+        ma10 = float(close.tail(10).mean()) if len(close) >= 10 else float("nan")
         ma20 = float(close.tail(20).mean())
         ma60 = float(close.tail(60).mean()) if len(close) >= 60 else float("nan")
         recent = close.tail(120)
         mdd = float((recent / recent.cummax() - 1).min())
+        last5 = close.tail(5)
+        mdd5 = float((last5 / last5.cummax() - 1).min()) if len(last5) else 0.0
+        amp5 = float((close.tail(5).max() - close.tail(5).min()) / (close.tail(5).min() + 1e-9))
+        # 20日新高（用收盘价近似）
+        prior20_high = float(close.iloc[-21:-1].max()) if len(close) > 21 else float(close.max())
+        breakout = bool(last >= prior20_high * 0.999)
+        amount_ratio = float(amount5 / (amount20 + 1e-9)) if amount20 else 1.0
+        liquidity = round(min(amount20 / 1e8, 5.0) * 20, 1)              # 0~100 流动性评分
+        vol20 = float(close.pct_change().tail(20).std(ddof=0) * np.sqrt(252))
+        risk_score = round(min(vol20 * 100 + abs(mdd) * 100, 100), 1)    # 越高越危险
 
         fund = data.get_fundamentals([sym], fields=["pe", "pb", "roe", "revenue_yoy", "net_profit_yoy"])
         f = fund.loc[sym] if (not fund.empty and sym in fund.index) else {}
+        mc = (market_caps or {}).get(sym, np.nan)
 
         row = {
             "symbol": sym,
             "name": inst.name if inst else "",
             "industry": (inst.industry if inst else "") or industry_of(sym),
             "close": round(last, 2),
-            "ret_5d": ret(5), "ret_20d": ret(20), "ret_60d": ret(60), "ret_120d": ret(120),
-            "amount": amount20,
+            "ret_3d": ret(3), "ret_5d": ret(5), "ret_10d": ret(10),
+            "ret_20d": ret(20), "ret_60d": ret(60), "ret_120d": ret(120),
+            "avg_amount_5d": amount5, "avg_amount_20d": amount20, "amount": amount20,
+            "amount_ratio": amount_ratio,
             "vol_ratio": float(vol.tail(5).mean() / (vol.tail(20).mean() + 1e-9)) if vol.tail(20).mean() else 1.0,
+            "above_ma5": bool(last > ma5),
+            "above_ma10": bool(pd.notna(ma10) and last > ma10),
             "above_ma20": bool(last > ma20),
             "above_ma60": bool(pd.notna(ma60) and last > ma60),
-            "ma20": ma20, "ma60": ma60,
-            "volatility": float(close.pct_change().tail(20).std(ddof=0) * np.sqrt(252)),
-            "max_drawdown": mdd,
+            "breakout_20d": breakout,
+            "ma5": ma5, "ma10": ma10, "ma20": ma20, "ma60": ma60,
+            "volatility": vol20,
+            "max_drawdown": mdd, "max_drawdown_5d": mdd5, "amplitude_5d": amp5,
+            "liquidity_score": liquidity, "risk_score": risk_score,
+            "list_days": int(len(close)),
+            "market_cap": float(mc) if pd.notna(mc) else np.nan,
             "rsi": round(_rsi(close, 14), 1),
             "is_st": is_st,
             "pe": float(f["pe"]) if "pe" in f and pd.notna(f["pe"]) else np.nan,

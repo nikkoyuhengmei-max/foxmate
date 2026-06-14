@@ -93,24 +93,27 @@ aquant backtest --strategy multi_factor --start 2024-01-01 --end 2026-06-12 --un
 
 首页与 CLI 默认聚焦 **3 个核心选股策略**（选股与回测共用同一套打分逻辑）：
 
-| key | 名称 | 适用周期 | 主要因子 |
+| key | 名称 | 适用周期 | 主要逻辑 |
 |-----|------|----------|----------|
-| `short_momentum` | 短线强势选股 | 1-10 天 | 5/20日涨幅、量比放量、站上MA20、RSI不过热、排除ST/低流动性 |
+| `short_strength` ⭐默认 | 短线强势股 | 1-10 天 | 近期涨幅强(5日>3%)+量能放大(>1.3x)+站上MA5/MA10+突破20日新高+RSI 50-85不过热，排除ST/低流动性/**超大市值慢速蓝筹** |
 | `trend_quality` | 稳健趋势选股 | 1-8 周 | MA20/MA60多头排列、低波动、回撤可控、成交额、价格强度 |
 | `quality_value` | 质量价值选股 | 1-6 个月 | ROE、低PE/PB、营收/净利增长、趋势过滤 |
 
 ```bash
-aquant strategies                          # 查看核心 / 高级策略目录
-aquant screen --strategy short_momentum --top 20   # 默认即此策略
-aquant backtest --strategy quality_value
+aquant screen --strategy short_strength --top 20          # 默认即短线强势股
+aquant screen --strategy short_strength --keep-blue-chip  # 不排除超大市值慢蓝筹
+aquant backtest --strategy short_strength
 ```
 
-选股结果每只股票输出：排名、代码、名称、行业、最新价、5/20/60日涨跌幅、成交额、RSI、综合评分、
-**信号(买入候选/观察/排除)、选中原因、风险提示**。
+**短线强势股**输出每只：排名、代码、名称、行业、最新价、3/5/10日涨跌幅、量能放大倍数、RSI、是否突破20日新高、
+综合评分、**信号(强势观察/回踩观察/过热谨慎/排除)、选中原因、风险提示**。
+
+> 评分权重：3日动量20% + 5日动量25% + 量能放大20% + 趋势强度15% + 突破强度10% + 风险控制10%。
+> 慢速蓝筹过滤：市值 > 3000亿 且 5日涨幅 < 5% 视为慢票排除（`--max-market-cap` 可调；市值取不到时显示 N/A 并跳过该过滤，由强势硬条件兜底）。
 
 高级/实验策略（不在首页默认显示，可在仪表盘"高级/实验策略"或 CLI 指定）：
-`buy_and_hold` / `double_ma` / `low_volatility` / `dividend_value` / `momentum_20_60` /
-`multi_factor_v2` / `momentum` / `reversal` / `multi_factor` / `grid` / `etf_rotation`。
+`short_momentum` / `buy_and_hold` / `double_ma` / `low_volatility` / `dividend_value` /
+`momentum_20_60` / `multi_factor_v2` / `momentum` / `reversal` / `multi_factor` / `grid` / `etf_rotation`。
 
 ### 仪表盘：策略选股工作台
 
