@@ -189,17 +189,42 @@ def universe_status(name: str) -> Dict[str, Any]:
     }
 
 
+def _build_real_manager(symbols: List[str], config: SystemConfig, use_cache: bool = True):
+    """按真实数据源构建管理器；配置源取数失败/为空时自动切换另一真实源。
+
+    返回 (manager_or_None, used_source, errors)。
+    """
+    src = DATA_CFG["source"] if DATA_CFG["source"] in ("baostock", "akshare") else "baostock"
+    order = [src] + [s for s in ("baostock", "akshare") if s != src]
+    errs: List[str] = []
+    last = None
+    for s in order:
+        common = dict(symbols=list(symbols), start=DATA_CFG["start"], end=DATA_CFG["end"],
+                      benchmark=DATA_CFG["benchmark"], cache_dir=DATA_CFG["cache_dir"],
+                      refresh=not use_cache, config=config)
+        try:
+            m = MarketDataManager.from_baostock(**common) if s == "baostock" else MarketDataManager.from_akshare(**common)
+            if m.symbols:
+                return m, s, errs
+            errs.append(f"{s} 返回 0 只行情")
+            last = m
+        except Exception as exc:  # noqa: BLE001
+            errs.append(f"{s}: {exc}")
+    return last, None, errs
+
+
 def _manager_for_universe(syms: List[str], config: SystemConfig, use_cache: bool = True):
-    """为给定股票池构建数据管理器（真实模式下直接按 syms 取数，不依赖默认池）。"""
+    """为给定股票池构建数据管理器（真实模式下直接按 syms 取数，跨源回退；不依赖默认池）。"""
     # 演示/示例模式：用示例数据并取交集
     if DATA_CFG.get("demo_mode") or DATA_CFG["source"] == "sample":
         mdm = get_data_manager(config)
         return mdm, [s for s in syms if s in mdm.symbols]
-    src = DATA_CFG["source"]
-    common = dict(symbols=syms, start=DATA_CFG["start"], end=DATA_CFG["end"],
-                  benchmark=DATA_CFG["benchmark"], cache_dir=DATA_CFG["cache_dir"],
-                  refresh=not use_cache, config=config)
-    m = MarketDataManager.from_baostock(**common) if src == "baostock" else MarketDataManager.from_akshare(**common)
+    m, used, errs = _build_real_manager(syms, config, use_cache=use_cache)
+    if m is None:
+        _ACTUAL["error"] = "；".join(errs)
+        return MarketDataManager(config), []
+    if used:
+        _ACTUAL.update({"source": used, "is_real": True, "using_mock": False, "error": None})
     got = [s for s in syms if s in m.symbols]
     return m, got
 
@@ -245,30 +270,13 @@ def get_data_manager(config: SystemConfig = DEFAULT_CONFIG, refresh: bool = Fals
         _DATA_CACHE["default"] = mgr
         return mgr
 
-    # 真实数据源：失败不回退到 mock，直接抛错由上层显示原因
-    try:
-        common = dict(
-            symbols=cfg["symbols"], start=cfg["start"], end=cfg["end"],
-            benchmark=cfg["benchmark"], cache_dir=cfg["cache_dir"],
-            refresh=cfg["refresh"], config=config,
-        )
-        if src == "baostock":
-            mgr = MarketDataManager.from_baostock(**common)
-        elif src == "akshare":
-            mgr = MarketDataManager.from_akshare(**common)
-        else:
-            raise DataSourceError(f"未知数据源: {src}")
-        if not mgr.symbols:
-            raise DataSourceError("股票池为空：真实数据源未返回任何标的")
-    except DataSourceError as exc:
-        _ACTUAL.update({"source": src, "is_real": False, "using_mock": False, "error": str(exc)})
-        raise
-    except Exception as exc:  # noqa: BLE001
-        msg = f"真实数据源不可用，请检查 Baostock/AkShare 或网络连接（{src}: {exc}）"
+    # 真实数据源：配置源失败自动切换另一真实源；都失败不回退 mock，抛错由上层显示原因
+    mgr, used, errs = _build_real_manager(cfg["symbols"], config, use_cache=not cfg["refresh"])
+    if mgr is None or not mgr.symbols:
+        msg = "真实数据源不可用，请检查 Baostock/AkShare 或网络连接（" + "；".join(errs) + "）"
         _ACTUAL.update({"source": src, "is_real": False, "using_mock": False, "error": msg})
-        raise DataSourceError(msg) from exc
-
-    _ACTUAL.update({"source": src, "is_real": True, "using_mock": False, "error": None})
+        raise DataSourceError(msg)
+    _ACTUAL.update({"source": used or src, "is_real": True, "using_mock": False, "error": None})
     _DATA_CACHE["default"] = mgr
     return mgr
 
@@ -611,23 +619,11 @@ def _manager_for_symbol(symbol: str, config: SystemConfig) -> Optional[MarketDat
 
     若该标的不在已加载股票池中，则按当前数据源临时拉取它（缓存复用）。
     """
-    mdm = get_data_manager(config)
-    if symbol in mdm.symbols:
-        return mdm
-    src = DATA_CFG["source"]
-    if src not in ("baostock", "akshare"):
-        return None  # 示例数据无法获取任意股票
-    try:
-        common = dict(
-            symbols=[symbol], start=DATA_CFG["start"], end=DATA_CFG["end"],
-            benchmark=DATA_CFG["benchmark"], cache_dir=DATA_CFG["cache_dir"],
-            refresh=False, config=config,
-        )
-        m = MarketDataManager.from_baostock(**common) if src == "baostock" else MarketDataManager.from_akshare(**common)
-        return m if symbol in m.symbols else None
-    except Exception as exc:  # noqa: BLE001
-        print(f"[forecast] 拉取 {symbol} 数据失败：{exc}")
-        return None
+    if DATA_CFG.get("demo_mode") or DATA_CFG["source"] == "sample":
+        mdm = get_data_manager(config)
+        return mdm if symbol in mdm.symbols else None
+    m, _used, _errs = _build_real_manager([symbol], config, use_cache=True)
+    return m if (m is not None and symbol in m.symbols) else None
 
 
 def search_stocks(q: str, limit: int = 20) -> List[dict]:
@@ -1187,6 +1183,8 @@ def screen_stocks(
         diag["loaded_count"] = len(syms)
         if not syms:
             diag["empty_reason"] = "行情数据未返回：数据源接口失败/网络/代码格式问题"
+            if _ACTUAL.get("error"):
+                diag.setdefault("errors", []).append(_ACTUAL["error"])
             return _screen_err(strategy, "已取到成分股，但行情数据未返回（请检查 Baostock/AkShare 行情接口或网络）。", diag)
     else:
         mdm = get_data_manager(config)

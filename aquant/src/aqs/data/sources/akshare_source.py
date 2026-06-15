@@ -59,8 +59,8 @@ class AkShareDataSource:
         except Exception as exc:  # pragma: no cover - depends on local install
             raise ImportError("未找到 akshare。请先安装：pip install akshare") from exc
         self.ak = ak
-        # 站点会对高频请求限流，调用之间略作停顿
-        self.request_delay = 0.3
+        self.request_delay = 0.0
+        self.max_workers = 8   # 并发抓取行情
 
     def _retry(self, fn: Callable, *args, tries: int = 3, base: float = 0.8, **kwargs):
         """带指数退避的重试，缓解东方财富/新浪的偶发限流与断连。"""
@@ -74,35 +74,46 @@ class AkShareDataSource:
         raise last  # type: ignore[misc]
 
     # --------------------------------------------------------------- bars
+    def _fetch_one(self, sym: str, s: str, e: str, adjust: str):
+        raw = self._retry(self.ak.stock_zh_a_hist, symbol=_code(sym), period="daily",
+                          start_date=s, end_date=e, adjust=adjust)
+        if raw is None or raw.empty:
+            return sym, None
+        date_col = "日期" if "日期" in raw.columns else raw.columns[0]
+        raw = raw.copy()
+        raw.index = pd.to_datetime(raw[date_col])
+        df = pd.DataFrame(index=raw.index)
+        for zh, col in _HIST_COLS.items():
+            if zh in raw.columns:
+                df[col] = pd.to_numeric(raw[zh], errors="coerce")
+        df["suspended"] = False
+        return sym, df
+
     def get_bars(
         self, symbols: Sequence[str], start: str, end: str, adjust: str = "qfq"
     ) -> tuple[Dict[str, pd.DataFrame], Dict[str, pd.Series]]:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         s = start.replace("-", "")
         e = end.replace("-", "")
         bars: Dict[str, pd.DataFrame] = {}
         adj: Dict[str, pd.Series] = {}
-        for sym in symbols:
-            try:
-                raw = self._retry(
-                    self.ak.stock_zh_a_hist,
-                    symbol=_code(sym), period="daily", start_date=s, end_date=e, adjust=adjust,
-                )
-                time.sleep(self.request_delay)
-            except Exception as exc:
-                print(f"[AkShare] 行情跳过 {sym}: {exc}")
-                continue
-            if raw is None or raw.empty:
-                continue
-            date_col = "日期" if "日期" in raw.columns else raw.columns[0]
-            raw = raw.copy()
-            raw.index = pd.to_datetime(raw[date_col])
-            df = pd.DataFrame(index=raw.index)
-            for zh, col in _HIST_COLS.items():
-                if zh in raw.columns:
-                    df[col] = pd.to_numeric(raw[zh], errors="coerce")
-            df["suspended"] = False  # AkShare 历史一般不含停牌日（缺行即视为不可交易）
-            bars[sym] = df
-            adj[sym] = pd.Series(1.0, index=df.index)  # 价格已按 adjust 复权
+        symbols = list(symbols)
+        # AkShare 为 HTTP 接口，可并发加速（大股票池显著提速）
+        workers = min(self.max_workers, max(1, len(symbols)))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = {ex.submit(self._fetch_one, sym, s, e, adjust): sym for sym in symbols}
+            for fut in as_completed(futs):
+                sym = futs[fut]
+                try:
+                    sym, df = fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[AkShare] 行情跳过 {sym}: {exc}")
+                    continue
+                if df is None:
+                    continue
+                bars[sym] = df
+                adj[sym] = pd.Series(1.0, index=df.index)
         return bars, adj
 
     # -------------------------------------------------------- instruments
