@@ -138,27 +138,18 @@ class BaostockDataSource:
 
     # -------------------------------------------------------- instruments
     def get_instruments(self, symbols: Sequence[str], st_map: Dict[str, bool]) -> Dict[str, Instrument]:
-        out: Dict[str, Instrument] = {}
-        for sym in symbols:
-            name, list_date, delist_date = "", None, None
-            try:
-                rs = self.bs.query_stock_basic(code=_bs_code(sym))
-                d = rs.get_data() if getattr(rs, "error_code", "0") == "0" else None
-                if d is not None and not d.empty:
-                    row = d.iloc[0]
-                    name = str(row.get("code_name", "") or "")
-                    ld = row.get("ipoDate")
-                    od = row.get("outDate")
-                    list_date = str(ld) if ld else None
-                    delist_date = str(od) if od and str(od) not in ("", "nan") else None
-            except Exception as exc:
-                print(f"[Baostock] 基础信息缺失 {sym}: {exc}")
-            out[sym] = Instrument(
-                symbol=sym, name=name, asset_type=AssetType.STOCK, board=classify_board(sym),
-                list_date=list_date, delist_date=delist_date,
-                is_st=st_map.get(sym, "ST" in name.upper()),
-            )
-        return out
+        """不再逐只调用 query_stock_basic（避免大池逐只请求与 pandas 兼容问题）。
+
+        ST 来自 K 线 isST 字段；名称由 universe 缓存批量补全；行业用本地映射。
+        """
+        from aqs.data.industry import industry_of
+
+        return {
+            sym: Instrument(symbol=sym, name="", asset_type=AssetType.STOCK,
+                            board=classify_board(sym), industry=industry_of(sym),
+                            is_st=bool(st_map.get(sym, False)))
+            for sym in symbols
+        }
 
     # ---------------------------------------------------------- benchmark
     def get_benchmark(self, benchmark: str, start: str, end: str) -> pd.DataFrame:

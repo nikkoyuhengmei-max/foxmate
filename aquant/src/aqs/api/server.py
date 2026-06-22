@@ -35,7 +35,13 @@ def create_app() -> "FastAPI":
 
     @app.exception_handler(service.DataSourceError)
     def _data_source_error(request: "Request", exc: service.DataSourceError):
-        return JSONResponse(status_code=200, content={"success": False, "error": str(exc)})
+        return JSONResponse(status_code=200, content={"success": False, "stage": "data_source", "error": str(exc)})
+
+    @app.exception_handler(Exception)
+    def _any_error(request: "Request", exc: Exception):
+        # 任何未处理异常都返回明确 JSON，禁止裸 HTTP 500
+        return JSONResponse(status_code=200, content={
+            "success": False, "stage": "unknown", "error": f"{type(exc).__name__}: {exc}"})
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
