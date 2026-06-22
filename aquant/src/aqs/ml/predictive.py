@@ -162,9 +162,12 @@ def predict_universe(
     market_caps: Optional[Dict[str, float]] = None,
     min_history: int = 80,
     min_amount: float = 5e7,
+    names: Optional[Dict[str, str]] = None,
+    prefilter: int = 150,
 ) -> pd.DataFrame:
     from aqs.data.industry import industry_of
 
+    names = names or {}
     universe = list(universe) if universe else list(data.symbols)
     asof = pd.Timestamp(asof) if asof is not None else None
     ctx = data.pit(asof) if asof is not None else _null()
@@ -199,8 +202,9 @@ def predict_universe(
             vol = bars["volume"].astype(float)
             vol_spike = float(vol.iloc[-1] / (vol.tail(20).mean() + 1e-9)) if vol.tail(20).mean() else 1.0
             row = vrows.iloc[-1]
+            _nm = (inst.name if inst and inst.name else "") or names.get(sym, "")
             cur[sym] = {
-                "symbol": sym, "name": inst.name if inst else "", "industry": (inst.industry if inst else "") or industry_of(sym),
+                "symbol": sym, "name": _nm, "industry": (inst.industry if inst else "") or industry_of(sym),
                 "close": round(float(close.iloc[-1]), 2), "is_st": bool(inst and inst.is_st),
                 "feat": row[_FEATURE_COLS].values.astype(float),
                 "rsi": float(row["rsi"]) if pd.notna(row["rsi"]) else 50.0,
@@ -218,6 +222,13 @@ def predict_universe(
 
     if not cur:
         return pd.DataFrame()
+
+    # 第一层：大池先用便宜的动量分粗筛，保留前 prefilter 只，再做完整评分（第二层）
+    if prefilter and len(cur) > prefilter:
+        def _quick(c):
+            return 0.5 * (c.get("ret_5") or 0) + 0.3 * (c.get("ret_3") or 0) + 0.2 * (c.get("ret_10") or 0)
+        keep = sorted(cur, key=lambda s: _quick(cur[s]), reverse=True)[:prefilter]
+        cur = {s: cur[s] for s in keep}
 
     # 规则评分模型（无需训练，稳定快速）：横截面 z-score 合成上涨概率
     rows = []

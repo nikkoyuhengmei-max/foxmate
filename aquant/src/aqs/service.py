@@ -100,9 +100,58 @@ _ACTUAL: Dict[str, Any] = {"source": None, "is_real": False, "using_mock": False
 _UNIVERSE_CACHE: Dict[str, List[str]] = {}
 
 
-_INDEX_MIN = {"hs300": 250, "zz500": 450, "all": 1000, "sz50": 40, "default_fast": 50}
+_INDEX_MIN = {"hs300": 250, "zz500": 450, "hs800": 700, "all": 1000, "sz50": 40, "default_fast": 50}
 # 最近一次 universe 加载的元信息（供状态栏展示）
 _LAST_UNIVERSE_META: Dict[str, Any] = {}
+_LAST_UNIVERSE_NAMES: Dict[str, str] = {}
+
+
+_GLOBAL_NAME_MAP: Dict[str, str] = {}
+
+
+def _global_name_map() -> Dict[str, str]:
+    """全市场代码→名称（缓存）：用于补全名称。优先本地 all_a 缓存，其次 AkShare。"""
+    global _GLOBAL_NAME_MAP
+    if _GLOBAL_NAME_MAP:
+        return _GLOBAL_NAME_MAP
+    out: Dict[str, str] = {}
+    # 1) 已有的 universe 缓存（all_a / hs800 / hs300 / zz500）
+    try:
+        import csv as _csv
+        from aqs.data import universe as U
+        for nm in ("all", "hs800", "hs300", "zz500"):
+            p = U.cache_path(nm)
+            if os.path.exists(p):
+                with open(p, encoding="utf-8") as fh:
+                    for r in _csv.DictReader(fh):
+                        if r.get("symbol") and r.get("name"):
+                            out.setdefault(r["symbol"], r["name"])
+    except Exception:
+        pass
+    _GLOBAL_NAME_MAP = out
+    return out
+
+
+def _fill_names(picks: List[dict], universe_names: Optional[Dict[str, str]] = None) -> None:
+    """补全选股结果中的股票名称：universe 缓存 → 全市场缓存 → 否则“名称缺失”。"""
+    universe_names = universe_names or {}
+    gmap = None
+    missing = []
+    for p in picks:
+        if p.get("name"):
+            continue
+        sym = p.get("symbol")
+        nm = universe_names.get(sym)
+        if not nm:
+            if gmap is None:
+                gmap = _global_name_map()
+            nm = gmap.get(sym)
+        if not nm:
+            missing.append(sym)
+            nm = "名称缺失"
+        p["name"] = nm
+    if missing:
+        print(f"[names] 名称缺失 {len(missing)} 只: {missing[:10]}")
 
 
 def load_universe(name, source: Optional[str] = None, use_cache: bool = True,
@@ -128,7 +177,7 @@ def load_universe(name, source: Optional[str] = None, use_cache: bool = True,
                 "cache_file": directory._WATCHLIST_CSV, "updated_at": None,
                 "error": None if syms else "自选股为空，请先加入自选。", "errors": []}
 
-    if key in ("hs300", "zz500", "sz50", "all", "broad", "default_fast"):
+    if key in ("hs300", "zz500", "sz50", "all", "broad", "default_fast", "hs800"):
         from aqs.data import universe as U
         key = "all" if key == "broad" else key
         info = U.load(key, source=source, refresh=refresh or (not use_cache))
@@ -136,20 +185,22 @@ def load_universe(name, source: Optional[str] = None, use_cache: bool = True,
         err = None
         if size == 0:
             err = "；".join(info.get("errors") or []) or "数据源没有返回股票"
+        names = {r["symbol"]: r.get("name", "") for r in info.get("rows", [])}
         return {"name": key, "source": info["source"], "symbols": info["symbols"], "size": size,
                 "cache_file": info["cache_path"], "updated_at": info["updated_at"],
-                "error": err, "errors": info.get("errors", [])}
+                "error": err, "errors": info.get("errors", []), "names": names}
 
     syms = list(DATA_CFG["symbols"])
     return {"name": "default", "source": "default", "symbols": syms, "size": len(syms),
-            "cache_file": None, "updated_at": None, "error": None, "errors": []}
+            "cache_file": None, "updated_at": None, "error": None, "errors": [], "names": {}}
 
 
 def resolve_universe(universe) -> List[str]:
     """解析 universe 为代码列表，并记录来源元信息（_LAST_UNIVERSE_META）。"""
-    global _LAST_UNIVERSE_META
+    global _LAST_UNIVERSE_META, _LAST_UNIVERSE_NAMES
     info = load_universe(universe)
     _LAST_UNIVERSE_META = {k: info.get(k) for k in ("name", "source", "size", "cache_file", "updated_at", "error", "errors")}
+    _LAST_UNIVERSE_NAMES = info.get("names", {}) or {}
     return info.get("symbols", [])
 
 
@@ -1194,9 +1245,11 @@ def screen_stocks(
         if use_sentiment:
             names = {s: (mdm.instrument(s).name if mdm.instrument(s) else "") for s in syms}
             sentiment, sent_meta = _sentiment_records(syms, names=names, asof=asof, use_cache=use_cache)
+        uni_names = _LAST_UNIVERSE_NAMES if (universe is not None and str(universe) not in ("", "default")) else {}
         df = predict_universe(mdm, universe=syms or None, asof=asof, top_n=top_n, sentiment=sentiment,
-                              min_amount=(1e7 if lenient else 5e7))
+                              min_amount=(1e7 if lenient else 5e7), names=uni_names)
         picks = df.reset_index().to_dict(orient="records") if not df.empty else []
+        _fill_names(picks, uni_names)
         diag["final_count"] = len(picks)
         if not picks:
             diag.setdefault("empty_reason", "因子/规则筛选过严，未筛出股票（可开启宽松模式或扩大股票池）")
@@ -1240,6 +1293,7 @@ def screen_stocks(
     sessions = mdm.trading_dates(end=asof) if asof else mdm.trading_dates()
     asof_date = asof or (str(sessions[-1].date()) if len(sessions) else None)
     picks = df.reset_index().to_dict(orient="records") if not df.empty else []
+    _fill_names(picks, _LAST_UNIVERSE_NAMES if (universe is not None and str(universe) not in ("", "default")) else {})
     diag["final_count"] = len(picks)
     if not picks:
         diag.setdefault("empty_reason", "因子/规则筛选过严，未筛出股票（可开启宽松模式或扩大股票池）")

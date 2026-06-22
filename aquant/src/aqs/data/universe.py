@@ -19,7 +19,7 @@ from typing import Dict, List, Optional
 
 CACHE_DIR = os.path.join("data", "cache", "universe")
 _FILES = {"hs300": "hs300.csv", "zz500": "zz500.csv", "sz50": "sz50.csv",
-          "all": "all_a.csv", "default_fast": "default_fast.csv"}
+          "all": "all_a.csv", "default_fast": "default_fast.csv", "hs800": "hs800.csv"}
 _INDEX_CODE = {"hs300": "000300", "zz500": "000905", "sz50": "000016"}
 _FIELDS = ["symbol", "name", "exchange", "industry", "source", "updated_at"]
 
@@ -228,6 +228,35 @@ def load(name: str, source: Optional[str] = None, refresh: bool = False) -> Dict
         return {"name": name, "source": "builtin", "rows": rows,
                 "symbols": [r["symbol"] for r in rows], "raw_count": len(rows),
                 "cache_path": path, "updated_at": "刚刚", "errors": errors}
+
+    # hs800 = 沪深300 ∪ 中证500，按 symbol 去重（成分含真实名称）
+    if name == "hs800":
+        if not refresh:
+            cached = read_cache(name)
+            if cached and len(cached) >= 700:
+                return {"name": name, "source": "cache", "rows": cached,
+                        "symbols": [r["symbol"] for r in cached], "raw_count": len(cached),
+                        "cache_path": path, "updated_at": cached[0].get("updated_at"), "errors": []}
+        hs = load("hs300", source=source, refresh=refresh)
+        zz = load("zz500", source=source, refresh=refresh)
+        errs = list(hs.get("errors", [])) + list(zz.get("errors", []))
+        merged = {}
+        for r in hs.get("rows", []) + zz.get("rows", []):
+            merged.setdefault(r["symbol"], r)
+        rows = list(merged.values())
+        if rows:
+            save_cache(name, rows, "hs300+zz500")
+            return {"name": name, "source": "hs300+zz500", "rows": rows,
+                    "symbols": [r["symbol"] for r in rows], "raw_count": len(rows),
+                    "cache_path": path, "updated_at": "刚刚", "errors": errs}
+        cached = read_cache(name)
+        if cached:
+            return {"name": name, "source": "cache(stale)", "rows": cached,
+                    "symbols": [r["symbol"] for r in cached], "raw_count": len(cached),
+                    "cache_path": path, "updated_at": cached[0].get("updated_at"), "errors": errs}
+        return {"name": name, "source": "none", "rows": [], "symbols": [], "raw_count": 0,
+                "cache_path": path, "updated_at": None,
+                "errors": errs or ["沪深300/中证500 获取失败"]}
 
     # 1) 缓存
     if not refresh and source is None:

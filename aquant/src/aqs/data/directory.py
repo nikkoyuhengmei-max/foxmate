@@ -36,6 +36,26 @@ def normalize_code(q: str) -> Optional[str]:
     return None
 
 
+def to_baostock_symbol(symbol: str) -> str:
+    """系统标准代码 -> Baostock 代码：'600519.SH' -> 'sh.600519'。"""
+    code, _, suffix = symbol.partition(".")
+    suffix = suffix.upper()
+    if suffix in ("SH", "SZ", "BJ"):
+        return f"{suffix.lower()}.{code}"
+    return f"{_infer_exchange(code).lower()}.{code}"
+
+
+def from_baostock_symbol(bs_code: str) -> str:
+    """Baostock 代码 -> 系统标准代码：'sh.600519' -> '600519.SH'。"""
+    market, _, code = bs_code.partition(".")
+    return f"{code}.{market.upper()}"
+
+
+def normalize_symbol(text: str):
+    """代码/名称 -> 系统标准代码（找不到返回 None）。"""
+    return resolve(text)
+
+
 def _infer_exchange(code: str) -> str:
     if code.startswith(("6", "5", "9")):
         return "SH"
