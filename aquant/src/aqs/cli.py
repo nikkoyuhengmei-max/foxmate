@@ -120,16 +120,30 @@ def cmd_screen(args) -> int:
         save=getattr(args, "save", False),
     )
     flag = "真实数据" if res.get("is_real_data") else "示例数据(回退)"
+    if res.get("error"):
+        print(f"\n选股失败: {res['error']}")
+        if res.get("diagnostics"):
+            print("诊断:", res["diagnostics"])
+        return 1
     print(f"\n【{res.get('strategy_name')}】Top {res['top_n']} (asof={res['asof']}, 数据源={res.get('source')}/{flag}):")
-    print("-" * 104)
-    print(f"{'#':<3}{'代码':<11}{'名称':<10}{'行业':<7}{'最新价':>8}{'3日':>6}{'5日':>6}{'10日':>6}{'量比':>6}{'RSI':>5}{'评分':>7}  {'信号':<8}{'原因'}")
-    for p in res["picks"]:
-        bo = "▲" if p.get("breakout_20d") else " "
-        print(f"{p.get('rank',''):<3}{p.get('symbol',''):<11}{str(p.get('name','')):<10}{str(p.get('industry','')):<7}"
-              f"{p.get('close',0):>8.2f}{(p.get('ret_3d') or 0)*100:>5.1f}%{(p.get('ret_5d') or 0)*100:>5.1f}%"
-              f"{(p.get('ret_10d') or 0)*100:>5.1f}%{(p.get('amount_ratio') or 0):>5.1f}x{p.get('rsi',0):>5.0f}"
-              f"{p.get('score',0):>7.2f}  {str(p.get('signal','')):<8}{bo}{str(p.get('reason',''))}")
-    print("-" * 104)
+    print("-" * 110)
+    predictive = strat == "predictive_ranking"
+    if predictive:
+        print(f"{'#':<3}{'代码':<11}{'名称':<9}{'最新价':>9}{'3日':>6}{'5日':>6}{'10日':>6}{'RSI':>5}{'量比':>6}{'5日↑':>6}{'综合':>6}  {'信号':<7}{'原因'}")
+        for p in res["picks"]:
+            print(f"{p.get('rank',''):<3}{p.get('symbol',''):<11}{str(p.get('name','')):<9}{p.get('close',0):>9.2f}"
+                  f"{(p.get('ret_3') or 0)*100:>5.1f}%{(p.get('ret_5') or 0)*100:>5.1f}%{(p.get('ret_10') or 0)*100:>5.1f}%"
+                  f"{p.get('rsi',0):>5.0f}{(p.get('vol_ratio') or 0):>5.1f}x{(p.get('prob_up_5d') or 0)*100:>5.0f}%"
+                  f"{(p.get('final_score') or 0):>6.1f}  {str(p.get('signal','')):<7}{str(p.get('reason',''))}")
+    else:
+        print(f"{'#':<3}{'代码':<11}{'名称':<10}{'行业':<7}{'最新价':>8}{'3日':>6}{'5日':>6}{'10日':>6}{'量比':>6}{'RSI':>5}{'评分':>7}  {'信号':<8}{'原因'}")
+        for p in res["picks"]:
+            bo = "▲" if p.get("breakout_20d") else " "
+            print(f"{p.get('rank',''):<3}{p.get('symbol',''):<11}{str(p.get('name','')):<10}{str(p.get('industry','')):<7}"
+                  f"{p.get('close',0):>8.2f}{(p.get('ret_3d') or 0)*100:>5.1f}%{(p.get('ret_5d') or 0)*100:>5.1f}%"
+                  f"{(p.get('ret_10d') or 0)*100:>5.1f}%{(p.get('amount_ratio') or 0):>5.1f}x{p.get('rsi',0):>5.0f}"
+                  f"{p.get('score',0):>7.2f}  {str(p.get('signal','')):<8}{bo}{str(p.get('reason',''))}")
+    print("-" * 110)
     if not res["picks"]:
         print("没有筛选出符合条件的股票，请降低筛选条件或扩大股票池。")
     if res.get("saved"):

@@ -27,23 +27,8 @@ from aqs.trading.trader import PaperTrader
 
 _DATA_CACHE: Dict[str, MarketDataManager] = {}
 
-# 默认快速池：各行业代表性流动性较好的真实 A 股（约 60 只），用于快速演示/默认。
-# 真正的全市场/指数成分通过 universe=hs300/zz500/all 动态加载。
-_DEFAULT_UNIVERSE = [
-    "600519.SH", "000858.SZ", "600809.SH", "000568.SZ", "002304.SZ",        # 白酒
-    "600036.SH", "000001.SZ", "601318.SH", "601166.SH", "600000.SH",        # 银行/保险
-    "601398.SH", "601288.SH", "601988.SH", "601328.SH", "601601.SH",
-    "000333.SZ", "000651.SZ", "600690.SH", "000100.SZ", "002415.SZ",        # 家电/消费电子
-    "300750.SZ", "002594.SZ", "601012.SH", "300274.SZ", "688599.SH",        # 新能源
-    "688981.SH", "688111.SH", "603501.SH", "002049.SZ", "000725.SZ",        # 半导体/电子
-    "600276.SH", "300760.SZ", "600196.SH", "000538.SZ", "603259.SH",        # 医药
-    "600030.SH", "600999.SH", "000776.SZ", "300059.SZ", "601688.SH",        # 券商
-    "600900.SH", "601985.SH", "600905.SH", "003816.SZ",                     # 电力
-    "600028.SH", "601857.SH", "600585.SH", "601899.SH", "603993.SH",        # 周期/资源
-    "600887.SH", "603288.SH", "000895.SZ", "600009.SH", "601111.SH",        # 消费/交运
-    "000002.SZ", "600048.SH", "002230.SZ", "600570.SH", "000063.SZ",        # 地产/计算机/通信
-    "002475.SZ", "002714.SZ", "300015.SZ", "300124.SZ", "601888.SH",
-]
+# 默认快速池：真实 A 股固定列表（来源 aqs.data.universe.DEFAULT_FAST）。
+from aqs.data.universe import DEFAULT_FAST as _DEFAULT_UNIVERSE  # noqa: E402
 
 
 def _default_dates() -> tuple[str, str]:
@@ -63,7 +48,7 @@ class DataSourceError(Exception):
 
 _s, _e = _default_dates()
 DATA_CFG: Dict[str, Any] = {
-    "source": os.getenv("AQUANT_SOURCE", "baostock"),   # baostock | akshare | sample
+    "source": os.getenv("AQUANT_SOURCE", "akshare"),   # akshare(优先) | baostock(备用) | sample
     "symbols": _env_symbols(),
     "start": os.getenv("AQUANT_START", _s),
     "end": os.getenv("AQUANT_END", _e),
@@ -115,7 +100,7 @@ _ACTUAL: Dict[str, Any] = {"source": None, "is_real": False, "using_mock": False
 _UNIVERSE_CACHE: Dict[str, List[str]] = {}
 
 
-_INDEX_MIN = {"hs300": 250, "zz500": 450, "all": 1000, "sz50": 40}
+_INDEX_MIN = {"hs300": 250, "zz500": 450, "all": 1000, "sz50": 40, "default_fast": 50}
 # 最近一次 universe 加载的元信息（供状态栏展示）
 _LAST_UNIVERSE_META: Dict[str, Any] = {}
 
@@ -143,7 +128,7 @@ def load_universe(name, source: Optional[str] = None, use_cache: bool = True,
                 "cache_file": directory._WATCHLIST_CSV, "updated_at": None,
                 "error": None if syms else "自选股为空，请先加入自选。", "errors": []}
 
-    if key in ("hs300", "zz500", "sz50", "all", "broad"):
+    if key in ("hs300", "zz500", "sz50", "all", "broad", "default_fast"):
         from aqs.data import universe as U
         key = "all" if key == "broad" else key
         info = U.load(key, source=source, refresh=refresh or (not use_cache))
@@ -1172,6 +1157,7 @@ def screen_stocks(
                      "errors": meta.get("errors", [])})
         # 数量门槛：低于阈值直接报错，不运行模型，也不回退小样本池
         gate = _INDEX_MIN.get(uni_key)
+        diag["stage"] = "load_universe"
         if uni_key == "watchlist" and meta.get("size", 0) < 1:
             return _screen_err(strategy, "自选股为空，请先加入自选。", diag)
         if meta.get("error"):
@@ -1179,6 +1165,7 @@ def screen_stocks(
             return _screen_err(strategy, meta["error"], diag)
         if gate and meta.get("size", 0) < gate:
             return _screen_err(strategy, f"股票池数量异常，当前仅 {meta.get('size', 0)} 只（{uni_key} 期望≥{gate}），请检查数据源或股票池配置。", diag)
+        diag["stage"] = "load_bars"
         mdm, syms = _manager_for_universe(resolved, config, use_cache=use_cache)
         diag["loaded_count"] = len(syms)
         if not syms:

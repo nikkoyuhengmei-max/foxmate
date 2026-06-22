@@ -232,27 +232,30 @@ def create_app() -> "FastAPI":
                 use_sentiment=bool(payload.get("use_sentiment", False)),
                 lenient=bool(payload.get("lenient", False)),
             )
+            d = res.get("diagnostics") or {}
             if res.get("error"):
-                return {"success": False, "error": res["error"], "strategy": res.get("strategy"),
-                        "diagnostics": res.get("diagnostics")}
-            if not res.get("picks"):
-                return {"success": True, "strategy": res["strategy"], "strategy_name": res.get("strategy_name"),
-                        "asof_date": res["asof"], "data_source": res["source"], "is_real_data": res["is_real_data"],
-                        "elapsed_seconds": round(time.time() - t0, 2), "results": [],
-                        "message": "没有筛选出符合条件的股票，请降低筛选条件或扩大股票池。",
-                        "disclaimer": res["disclaimer"]}
+                return {"success": False, "stage": d.get("stage", "load_universe"),
+                        "error": res["error"], "strategy": res.get("strategy"),
+                        "universe": d.get("universe"),
+                        "processed_count": d.get("loaded_count", 0),
+                        "total_count": d.get("raw_count", 0),
+                        "diagnostics": d}
             return {
                 "success": True,
                 "strategy": res["strategy"],
-                "strategy_name": res["strategy_name"],
+                "strategy_name": res.get("strategy_name"),
+                "universe": d.get("universe", res.get("universe")),
+                "universe_count": d.get("raw_count"),
+                "processed_count": d.get("loaded_count"),
                 "asof_date": res["asof"],
                 "data_source": res["source"],
                 "is_real_data": res["is_real_data"],
                 "use_sentiment": res.get("use_sentiment", False),
                 "sentiment_meta": res.get("sentiment_meta"),
-                "diagnostics": res.get("diagnostics"),
+                "diagnostics": d,
                 "elapsed_seconds": round(time.time() - t0, 2),
                 "results": res["picks"],
+                "message": ("没有筛选出符合条件的股票，请降低筛选条件或扩大股票池。" if not res["picks"] else None),
                 "disclaimer": res["disclaimer"],
             }
         except Exception as exc:  # noqa: BLE001

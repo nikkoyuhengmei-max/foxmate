@@ -89,7 +89,7 @@
       <select id="advStrategy" class="hidden" onchange="useAdv()"></select>
       <label>股票池
         <select id="universe" onchange="runScreen()">
-          <option value="">蓝筹快速池(真实)</option>
+          <option value="default_fast">默认快速池(真实,约60只)</option>
           <option value="hs300">沪深300</option>
           <option value="zz500">中证500</option>
           <option value="watchlist">自选股</option>
@@ -347,9 +347,9 @@ async function runScreen(){
   log('运行选股：'+currentStrategy+' Top'+top+(uni?(' 股票池='+uni):'')+(exb?' 排除慢蓝筹':''));
   try{
     const len=document.getElementById('lenient').checked;
-    // 大股票池(沪深300/中证500/全A) + 预测模型首次需拉取大量行情并训练，给足超时
+    // 默认快速池 120s；沪深300/中证500/全A 300s；其它 120s
     const bigPool=['hs300','zz500','all'].includes(uni);
-    const tmo = (bigPool||currentStrategy==='predictive_ranking') ? 300000 : 60000;
+    const tmo = bigPool ? 300000 : 120000;
     const res=await api('/api/screen/run',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({strategy:currentStrategy,top:Number(top),universe:uni,exclude_large_cap:exb,use_cache:true,use_sentiment:window.useSent,lenient:len})},tmo);
     clearInterval(timer);
@@ -431,23 +431,22 @@ function renderScreen(res){
 
 function renderPredictive(picks){
   const pc=v=>v==null||isNaN(v)?'N/A':(v*100).toFixed(0)+'%';
-  let h='<table><thead><tr><th>排名</th><th class="lft">名称</th><th class="lft">代码</th><th class="lft">行业</th><th>最新价</th>'
-    +'<th>3日↑</th><th>5日↑</th><th>10日↑</th><th>预期5日</th><th>资金</th><th>技术</th><th>舆情</th><th>风险</th><th>综合</th>'
-    +'<th class="lft">信号</th><th class="lft">推荐理由</th><th class="lft">风险提示</th><th class="lft">操作</th></tr></thead><tbody>';
-  picks.forEach(p=>{ const na=v=>(v==null||(typeof v==='number'&&isNaN(v)))?'N/A':(typeof v==='number'?v.toFixed(0):v);
-    h+=`<tr><td>${p.rank}</td><td class="lft">${p.name||''}</td><td class="lft">${p.symbol}</td><td class="lft">${p.industry||'未分类'}</td>
+  let h='<table><thead><tr><th>排名</th><th class="lft">代码</th><th class="lft">名称</th><th class="lft">行业</th><th>最新价</th>'
+    +'<th>3日</th><th>5日</th><th>10日</th><th>RSI</th><th>量能比</th><th>5日↑概率</th><th>综合评分</th>'
+    +'<th class="lft">信号</th><th class="lft">入选原因</th><th class="lft">风险提示</th><th class="lft">操作</th></tr></thead><tbody>';
+  picks.forEach(p=>{
+    h+=`<tr><td>${p.rank}</td><td class="lft">${p.symbol}</td><td class="lft">${p.name||''}</td><td class="lft">${p.industry||'未分类'}</td>
     <td>${p.close}</td>
-    <td>${pc(p.prob_up_3d)}</td><td class="${(p.prob_up_5d||0)>=0.5?'pos':'neg'}">${pc(p.prob_up_5d)}</td><td>${pc(p.prob_up_10d)}</td>
-    <td class="${cls(p.expected_return_5d||0)}">${p.expected_return_5d!=null?fmtPct(p.expected_return_5d):'N/A'}</td>
-    <td>${na(p.money_score)}</td><td>${na(p.tech_score)}</td><td>${na(p.sentiment_factor_score)}</td><td>${na(p.risk_score)}</td>
+    <td class="${cls(p.ret_3||0)}">${fmtPct(p.ret_3||0)}</td><td class="${cls(p.ret_5||0)}">${fmtPct(p.ret_5||0)}</td><td class="${cls(p.ret_10||0)}">${fmtPct(p.ret_10||0)}</td>
+    <td>${(p.rsi||0).toFixed(0)}</td><td>${(p.vol_ratio||0).toFixed(1)}x</td>
+    <td class="${(p.prob_up_5d||0)>=0.5?'pos':'neg'}">${pc(p.prob_up_5d)}</td>
     <td><b>${(p.final_score!=null?p.final_score.toFixed(0):'-')}</b></td>
     <td class="lft ${predSigClass(p.signal)}">${p.signal||''}</td>
     <td class="lft reason">${p.reason||''}</td><td class="lft reason">${p.risk||''}</td>
     <td class="lft row-actions">
       <button class="mini secondary" onclick="viewDetail('${p.symbol}')">详情</button>
       <button class="mini secondary" onclick="forecastSym('${p.symbol}')">预测</button>
-      <button class="mini secondary" onclick="addWatchSym('${p.symbol}')">自选</button>
-      <button class="mini secondary" onclick="addPaper('${p.symbol}')">模拟</button></td></tr>`; });
+      <button class="mini secondary" onclick="addWatchSym('${p.symbol}')">自选</button></td></tr>`; });
   const foot='<div class="sub" style="margin-top:6px;color:var(--yellow)">模型预测仅供研究参考，不构成投资建议。预测概率不代表确定收益，历史表现不代表未来结果。</div>';
   document.getElementById('screen').innerHTML=h+'</tbody></table>'+foot;
 }

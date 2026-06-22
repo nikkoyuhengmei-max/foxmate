@@ -170,9 +170,6 @@ def predict_universe(
     ctx = data.pit(asof) if asof is not None else _null()
 
     cur: Dict[str, dict] = {}
-    # 池化训练样本（在同一循环里累积，避免重复读取/计算特征）
-    from collections import defaultdict
-    Xh = defaultdict(list); yh = defaultdict(list); X5 = []; r5 = []
 
     with ctx:
         for sym in universe:
@@ -189,17 +186,7 @@ def predict_universe(
             close = bars["close"].astype(float)
             fmat = feats[_FEATURE_COLS]
             valid = fmat.notna().all(axis=1)
-            # 累积训练样本（特征只算一次）
-            for h in HORIZONS:
-                lab = (close.shift(-h) / close - 1.0)
-                m = valid & lab.notna()
-                if m.sum():
-                    Xh[h].append(fmat[m].values); yh[h].append((lab[m].values > 0).astype(int))
-            lab5 = (close.shift(-5) / close - 1.0)
-            m5 = valid & lab5.notna()
-            if m5.sum():
-                X5.append(fmat[m5].values); r5.append(lab5[m5].values)
-            # 当前预测行（最新有效特征，无需标签）
+            # 当前预测行（最新有效特征）
             vrows = fmat[valid]
             if not len(vrows):
                 continue
@@ -232,31 +219,17 @@ def predict_universe(
     if not cur:
         return pd.DataFrame()
 
-    # 训练（使用循环中已累积的样本）
-    models = {}
-    for h in HORIZONS:
-        if Xh[h]:
-            models[h] = _fit_clf(np.vstack(Xh[h]), np.concatenate(yh[h]))
-        else:
-            models[h] = None
-    reg5 = _fit_reg(np.vstack(X5), np.concatenate(r5)) if X5 else None
-
+    # 规则评分模型（无需训练，稳定快速）：横截面 z-score 合成上涨概率
     rows = []
     for sym, c in cur.items():
-        x = c["feat"].reshape(1, -1)
-        p3 = float(_proba(models.get(3), x)[0])
-        p5 = float(_proba(models.get(5), x)[0])
-        p10 = float(_proba(models.get(10), x)[0])
-        er5 = float(reg5.predict(x)[0]) if reg5 is not None else (p5 - 0.5) * 2 * c["volatility20"] / np.sqrt(252) * 5
         s = (sentiment or {}).get(sym, {})
-        rows.append({**c, "prob_up_3d": p3, "prob_up_5d": p5, "prob_up_10d": p10,
-                     "expected_return_5d": er5,
+        rows.append({**c,
                      "attention_score": s.get("attention_score", np.nan),
                      "sentiment_score": s.get("sentiment_score", np.nan),
                      "attention_change_3d": s.get("attention_change_3d"),
                      "risk_keyword_count": s.get("risk_keyword_count", np.nan)})
-
     df = pd.DataFrame(rows).set_index("symbol")
+    df = _rule_probabilities(df)
     df = _score_and_signal(df)
     df = df.sort_values("final_score", ascending=False)
     df.insert(0, "rank", range(1, len(df) + 1))
@@ -300,6 +273,33 @@ def _train_models(cur, data, asof):
             models[h] = None
     reg5 = _fit_reg(np.vstack(X5), np.concatenate(r5)) if X5 else None
     return models, reg5
+
+
+def _rule_probabilities(df: pd.DataFrame) -> pd.DataFrame:
+    """规则评分模型：用真实行情因子横截面打分，映射为未来上涨概率（无需训练）。
+
+    思路：动量(3/5/10日) + 趋势(站上均线) + 量能 + 不过热，做横截面 z-score 合成，
+    经 tanh 压缩到 ~0.32–0.68 的概率区间（保守、不过度自信）。
+    """
+    out = df.copy()
+    trend = (out["above_ma5"].astype(float) + out["above_ma10"].astype(float)
+             + out["above_ma20"].astype(float)) / 3.0
+    over = (out["rsi"] - 70).clip(lower=0)            # 超买惩罚
+    z_t = _z(trend)
+    z_vol = _z(out["vol_ratio"])
+    z_over = _z(over)
+
+    def prob(weight_short: float, weight_mid: float, weight_long: float) -> pd.Series:
+        combo = (weight_short * _z(out["ret_3"]) + weight_mid * _z(out["ret_5"])
+                 + weight_long * _z(out["ret_10"]) + 0.4 * z_t + 0.25 * z_vol - 0.3 * z_over)
+        return (0.5 + 0.16 * np.tanh(combo)).clip(0.05, 0.95)
+
+    out["prob_up_3d"] = prob(0.55, 0.30, 0.15)
+    out["prob_up_5d"] = prob(0.30, 0.45, 0.25)
+    out["prob_up_10d"] = prob(0.20, 0.35, 0.45)
+    daily_vol = out["volatility20"].fillna(out["volatility20"].median()) / np.sqrt(252)
+    out["expected_return_5d"] = ((out["prob_up_5d"] - 0.5) * 2 * daily_vol * np.sqrt(5)).round(4)
+    return out
 
 
 def _score_and_signal(df: pd.DataFrame) -> pd.DataFrame:

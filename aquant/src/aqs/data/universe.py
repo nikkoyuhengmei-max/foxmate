@@ -18,9 +18,27 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 CACHE_DIR = os.path.join("data", "cache", "universe")
-_FILES = {"hs300": "hs300.csv", "zz500": "zz500.csv", "sz50": "sz50.csv", "all": "all_a.csv"}
+_FILES = {"hs300": "hs300.csv", "zz500": "zz500.csv", "sz50": "sz50.csv",
+          "all": "all_a.csv", "default_fast": "default_fast.csv"}
 _INDEX_CODE = {"hs300": "000300", "zz500": "000905", "sz50": "000016"}
 _FIELDS = ["symbol", "name", "exchange", "industry", "source", "updated_at"]
+
+# 固定快速池：约 60 只流动性较好的真实 A 股（各行业代表）。全部真实代码，非示例。
+DEFAULT_FAST = [
+    "600519.SH", "000858.SZ", "600809.SH", "000568.SZ", "002304.SZ",        # 白酒
+    "600036.SH", "000001.SZ", "601318.SH", "601166.SH", "600000.SH",        # 银行/保险
+    "601398.SH", "601288.SH", "601988.SH", "601328.SH", "601601.SH",
+    "000333.SZ", "000651.SZ", "600690.SH", "000100.SZ", "002415.SZ",        # 家电/消费电子
+    "300750.SZ", "002594.SZ", "601012.SH", "300274.SZ", "688599.SH",        # 新能源
+    "688981.SH", "688111.SH", "603501.SH", "002049.SZ", "000725.SZ",        # 半导体/电子
+    "600276.SH", "300760.SZ", "600196.SH", "000538.SZ", "603259.SH",        # 医药
+    "600030.SH", "600999.SH", "000776.SZ", "300059.SZ", "601688.SH",        # 券商
+    "600900.SH", "601985.SH", "600905.SH", "003816.SZ",                     # 电力
+    "600028.SH", "601857.SH", "600585.SH", "601899.SH", "603993.SH",        # 周期/资源
+    "600887.SH", "603288.SH", "000895.SZ", "600009.SH", "601111.SH",        # 消费/交运
+    "000002.SZ", "600048.SH", "002230.SZ", "600570.SH", "000063.SZ",        # 地产/计算机/通信
+    "002475.SZ", "002714.SZ", "300015.SZ", "300124.SZ", "601888.SH",
+]
 
 
 def _infer_exchange(code: str) -> str:
@@ -193,6 +211,23 @@ def load(name: str, source: Optional[str] = None, refresh: bool = False) -> Dict
     name = str(name).lower()
     errors: List[str] = []
     path = cache_path(name)
+
+    # default_fast：固定真实股票池（可选用 AkShare 补全名称），写入缓存
+    if name == "default_fast":
+        from aqs.data.industry import industry_of
+        if not refresh:
+            cached = read_cache(name)
+            if cached and len(cached) >= 50:
+                return {"name": name, "source": "cache", "rows": cached,
+                        "symbols": [r["symbol"] for r in cached], "raw_count": len(cached),
+                        "cache_path": path, "updated_at": cached[0].get("updated_at"), "errors": []}
+        # 名称在选股取行情时由数据源补全；此处不联网，保证快速且不卡。
+        rows = [{"symbol": s, "name": "", "exchange": s.split(".")[-1],
+                 "industry": industry_of(s), "source": "builtin"} for s in DEFAULT_FAST]
+        save_cache(name, rows, "builtin")
+        return {"name": name, "source": "builtin", "rows": rows,
+                "symbols": [r["symbol"] for r in rows], "raw_count": len(rows),
+                "cache_path": path, "updated_at": "刚刚", "errors": errors}
 
     # 1) 缓存
     if not refresh and source is None:
