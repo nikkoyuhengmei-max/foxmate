@@ -205,7 +205,8 @@ def predict_universe(
             _nm = (inst.name if inst and inst.name else "") or names.get(sym, "")
             cur[sym] = {
                 "symbol": sym, "name": _nm, "industry": (inst.industry if inst else "") or industry_of(sym),
-                "close": round(float(close.iloc[-1]), 2), "is_st": bool(inst and inst.is_st),
+                "close": round(float(close.iloc[-1]), 2),
+                "is_st": bool((inst and inst.is_st) or ("ST" in (_nm or "").upper())),
                 "feat": row[_FEATURE_COLS].values.astype(float),
                 "rsi": float(row["rsi"]) if pd.notna(row["rsi"]) else 50.0,
                 "amount20": amount20, "amount_ratio": float(row["amount_ratio"]), "vol_ratio": float(row["vol_ratio"]),

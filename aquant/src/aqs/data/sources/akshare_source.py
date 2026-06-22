@@ -62,30 +62,38 @@ class AkShareDataSource:
         self.request_delay = 0.0
         self.max_workers = 8   # 并发抓取行情
 
-    def _retry(self, fn: Callable, *args, tries: int = 3, base: float = 0.8, **kwargs):
-        """带指数退避的重试，缓解东方财富/新浪的偶发限流与断连。"""
+    _BACKOFF = [1.0, 3.0]   # 最多重试 2 次：等待 1s、3s
+
+    def _retry(self, fn: Callable, *args, **kwargs):
+        """带退避的重试（1s、3s），捕获空响应/连接错误/JSON 解析错误。"""
         last: Optional[Exception] = None
-        for i in range(tries):
+        for i in range(len(self._BACKOFF) + 1):
             try:
                 return fn(*args, **kwargs)
             except Exception as exc:  # noqa: BLE001
                 last = exc
-                time.sleep(base * (2 ** i))
+                if i < len(self._BACKOFF):
+                    time.sleep(self._BACKOFF[i])
         raise last  # type: ignore[misc]
 
     # --------------------------------------------------------------- bars
     def _fetch_one(self, sym: str, s: str, e: str, adjust: str):
         raw = self._retry(self.ak.stock_zh_a_hist, symbol=_code(sym), period="daily",
                           start_date=s, end_date=e, adjust=adjust)
-        if raw is None or raw.empty:
+        if raw is None or len(raw) == 0:
             return sym, None
-        date_col = "日期" if "日期" in raw.columns else raw.columns[0]
+        # 按字段名选择，避免 df.columns=[...] 造成列数不匹配
+        date_col = "日期" if "日期" in raw.columns else (raw.columns[0] if len(raw.columns) else None)
+        if date_col is None or "收盘" not in raw.columns:
+            return sym, None
         raw = raw.copy()
         raw.index = pd.to_datetime(raw[date_col])
         df = pd.DataFrame(index=raw.index)
         for zh, col in _HIST_COLS.items():
             if zh in raw.columns:
                 df[col] = pd.to_numeric(raw[zh], errors="coerce")
+        if "close" not in df.columns:
+            return sym, None
         df["suspended"] = False
         return sym, df
 
@@ -99,7 +107,7 @@ class AkShareDataSource:
         bars: Dict[str, pd.DataFrame] = {}
         adj: Dict[str, pd.Series] = {}
         symbols = list(symbols)
-        # AkShare 为 HTTP 接口，可并发加速（大股票池显著提速）
+        failed: List[str] = []
         workers = min(self.max_workers, max(1, len(symbols)))
         with ThreadPoolExecutor(max_workers=workers) as ex:
             futs = {ex.submit(self._fetch_one, sym, s, e, adjust): sym for sym in symbols}
@@ -107,39 +115,33 @@ class AkShareDataSource:
                 sym = futs[fut]
                 try:
                     sym, df = fut.result()
-                except Exception as exc:  # noqa: BLE001
-                    print(f"[AkShare] 行情跳过 {sym}: {exc}")
+                except Exception:  # noqa: BLE001 — 不逐只刷屏，汇总统计
+                    failed.append(sym)
                     continue
                 if df is None:
+                    failed.append(sym)
                     continue
                 bars[sym] = df
                 adj[sym] = pd.Series(1.0, index=df.index)
+        self.last_stats = {"total": len(symbols), "success": len(bars), "failed": len(failed),
+                           "failed_symbols": failed}
+        if failed:
+            print(f"[AkShare] 行情：成功 {len(bars)} 只，失败 {len(failed)} 只（已跳过）")
         return bars, adj
 
     # -------------------------------------------------------- instruments
     def get_instruments(self, symbols: Sequence[str]) -> Dict[str, Instrument]:
+        """不再逐只联网请求基础信息（避免限流/空响应刷屏）。
+
+        名称在选股时由 universe 缓存批量补全；行业用本地映射；ST 由名称判断。
+        """
+        from aqs.data.industry import industry_of
+
         out: Dict[str, Instrument] = {}
         for sym in symbols:
-            name, industry, list_date = "", "未分类", None
-            try:
-                info = self._retry(self.ak.stock_individual_info_em, symbol=_code(sym))
-                time.sleep(self.request_delay)
-                kv = dict(zip(info["item"], info["value"]))
-                name = str(kv.get("股票简称", "") or "")
-                industry = str(kv.get("行业", "未分类") or "未分类")
-                ld = kv.get("上市时间")
-                if ld and str(ld) not in ("", "nan"):
-                    list_date = str(pd.to_datetime(str(ld)).date())
-            except Exception as exc:
-                print(f"[AkShare] 基础信息缺失 {sym}: {exc}")
             out[sym] = Instrument(
-                symbol=sym,
-                name=name,
-                asset_type=AssetType.STOCK,
-                board=classify_board(sym),
-                industry=industry,
-                list_date=list_date,
-                is_st=("ST" in name.upper()),
+                symbol=sym, name="", asset_type=AssetType.STOCK,
+                board=classify_board(sym), industry=industry_of(sym), is_st=False,
             )
         return out
 

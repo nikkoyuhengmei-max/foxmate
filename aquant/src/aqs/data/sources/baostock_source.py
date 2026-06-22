@@ -90,16 +90,24 @@ class BaostockDataSource:
         adj: Dict[str, pd.Series] = {}
         st_map: Dict[str, bool] = {}
         fund_rows: List[dict] = []
+        consecutive_fail = 0
+        failed = 0
         for sym in symbols:
-            rs = self.bs.query_history_k_data_plus(
-                _bs_code(sym), fields, start_date=start, end_date=end, frequency="d", adjustflag=flag
-            )
-            if getattr(rs, "error_code", "0") != "0":
-                print(f"[Baostock] 行情跳过 {sym}: {rs.error_msg}")
-                continue
-            raw = rs.get_data()
+            try:
+                rs = self.bs.query_history_k_data_plus(
+                    _bs_code(sym), fields, start_date=start, end_date=end, frequency="d", adjustflag=flag
+                )
+                raw = rs.get_data() if getattr(rs, "error_code", "0") == "0" else None
+            except Exception:  # noqa: BLE001 — Bad file descriptor / 网络错误等
+                raw = None
             if raw is None or raw.empty:
+                failed += 1
+                consecutive_fail += 1
+                if consecutive_fail >= 3:   # 连续失败 3 次，停止 Baostock
+                    print(f"[Baostock] 连续失败 {consecutive_fail} 次，停止；已成功 {len(bars)} 只")
+                    break
                 continue
+            consecutive_fail = 0
             raw.index = pd.to_datetime(raw["date"])
             num = lambda c: pd.to_numeric(raw[c], errors="coerce")
             df = pd.DataFrame({
@@ -123,6 +131,9 @@ class BaostockDataSource:
                     "roe": np.nan, "revenue_yoy": np.nan, "net_profit_yoy": np.nan,
                 })
         fundamentals = pd.DataFrame(fund_rows) if fund_rows else pd.DataFrame()
+        self.last_stats = {"total": len(symbols), "success": len(bars), "failed": failed}
+        if failed:
+            print(f"[Baostock] 行情：成功 {len(bars)} 只，失败 {failed} 只（已跳过）")
         return bars, adj, st_map, fundamentals
 
     # -------------------------------------------------------- instruments

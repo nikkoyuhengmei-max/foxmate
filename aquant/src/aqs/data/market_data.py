@@ -107,7 +107,7 @@ class MarketDataManager:
         end: str,
         benchmark: str = "000300.SH",
         adjust: str = "qfq",
-        with_fundamentals: bool = True,
+        with_fundamentals: bool = False,
         cache_dir: Optional[str] = None,
         refresh: bool = False,
         config: SystemConfig = DEFAULT_CONFIG,
@@ -116,6 +116,7 @@ class MarketDataManager:
 
         Requires ``pip install akshare`` and internet access. Set ``cache_dir`` to
         fetch once and reuse from disk (avoids repeated rate-limiting).
+        ``with_fundamentals`` defaults off to avoid slow per-stock valuation calls.
         """
         from aqs.data.sources.akshare_source import AkShareDataSource
         from aqs.data.cache import cache_key, cached_build

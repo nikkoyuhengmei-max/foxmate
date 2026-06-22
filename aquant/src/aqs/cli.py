@@ -146,9 +146,13 @@ def cmd_screen(args) -> int:
     print("-" * 110)
     if not res["picks"]:
         print("没有筛选出符合条件的股票，请降低筛选条件或扩大股票池。")
+    d = res.get("diagnostics") or {}
+    total = d.get("raw_count", 0)
+    loaded = d.get("loaded_count", len(res["picks"]))
+    print(f"汇总: 总股票 {total} | 成功取数 {loaded} | 跳过 {max(total - loaded, 0)} | "
+          f"数据源 {res.get('source')} | 用时 {_t.time()-t0:.1f}s")
     if res.get("saved"):
         print(f"已导出: {res['saved']}")
-    print(f"选股完成，用时 {_t.time()-t0:.1f} 秒")
     print(res["disclaimer"])
     return 0
 
@@ -287,7 +291,8 @@ def cmd_serve(args) -> int:
     os.environ["AQUANT_CACHE_DIR"] = cfg["cache_dir"]
     print(f"数据源: {cfg['source']}  股票池: {len(cfg['symbols'])} 只  区间: {cfg['start']}~{cfg['end']}")
     print(f"启动本地仪表盘: http://{args.host}:{args.port}  (Ctrl+C 退出)")
-    uvicorn.run("aqs.api.server:app", host=args.host, port=args.port, reload=args.reload)
+    uvicorn.run("aqs.api.server:app", host=args.host, port=args.port, reload=args.reload,
+                timeout_graceful_shutdown=5)
     return 0
 
 
