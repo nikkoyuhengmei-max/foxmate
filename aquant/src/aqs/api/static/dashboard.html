@@ -102,6 +102,7 @@
       <label class="sub"><input type="checkbox" id="useSent" onchange="runScreen()"> 舆情因子(辅助)</label>
       <label class="sub"><input type="checkbox" id="lenient" onchange="runScreen()"> 宽松模式</label>
       <button id="updDataBtn" class="secondary" onclick="updateData()">更新真实行情</button>
+      <button id="updIntraBtn" class="secondary" onclick="updateIntraday()">更新分钟行情</button>
       <button id="runScreenBtn" onclick="runScreen()">运行离线选股</button>
       <button id="runBtBtn" class="secondary" onclick="runBacktest()">策略历史表现</button>
       <span id="msg" class="sub"></span>
@@ -234,11 +235,13 @@ async function loadDataStatus(){
   box.textContent='读取行情缓存状态…';
   try{
     const s=await api('/api/data/status?universe='+encodeURIComponent(uni));
+    let intra=null; try{ intra=await api('/api/intraday/status?universe='+encodeURIComponent(uni)); }catch(e){}
     const ready=s.ready_for_screening;
     box.innerHTML='当前股票池 <b>'+s.universe+'</b>｜原始 '+s.universe_count
       +'｜已缓存 '+s.cached_count+'｜有效 <b style="color:'+(ready?'#2e7d32':'#c62828')+'">'+s.valid_count+'</b>'
       +'｜缺失 '+s.missing_count+'｜过期 '+s.stale_count+'｜失败 '+(s.failed_count||0)
       +'｜更新 '+(s.last_updated||'从未')
+      +(intra?'｜分钟缓存 '+intra.valid_count+'/'+intra.universe_count:'')
       +(ready?'｜<span style="color:#2e7d32">可离线选股</span>'
              :'｜<span style="color:#c62828">行情不足，请先“更新真实行情”</span>');
   }catch(e){ box.textContent='状态读取失败: '+e; }
@@ -257,6 +260,21 @@ async function updateData(){
     else{ log('行情更新完成：缓存命中 '+r.cached+'，新下载 '+r.success+'，失败 '+r.failed+'，用时 '+r.elapsed_seconds+'s'); }
   }catch(e){ log('行情更新异常: '+e); }
   finally{ busy('updDataBtn',false); loadDataStatus(); }
+}
+
+async function updateIntraday(){
+  const uni=document.getElementById('universe').value;
+  if(uni==='watchlist'){ alert('自选股无需批量更新'); return; }
+  if(!confirm('将联网下载 '+uni+' 的5分钟行情到本地缓存（用于高频参与度），可能耗时较久。是否继续？')) return;
+  busy('updIntraBtn',true,'更新中…');
+  document.getElementById('dataStatus').textContent='正在联网更新5分钟行情缓存（请勿关闭页面）…';
+  try{
+    const r=await api('/api/intraday/update',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({universe:uni})});
+    if(r.success===false){ log('分钟行情更新失败: '+(r.error||'')); }
+    else{ log('分钟行情更新完成：缓存命中 '+r.cached+'，新下载 '+r.success+'，失败 '+r.failed+'，用时 '+r.elapsed_seconds+'s'); }
+  }catch(e){ log('分钟行情更新异常: '+e); }
+  finally{ busy('updIntraBtn',false); loadDataStatus(); }
 }
 
 async function loadTimingMode(){
@@ -468,15 +486,29 @@ function renderScreen(res){
 
 function renderPredictive(picks){
   const pc=v=>v==null||isNaN(v)?'N/A':(v*100).toFixed(0)+'%';
+  const na=v=>v==null||isNaN(v)?'N/A':v;
+  const dirCls=v=>v==null||isNaN(v)?'':(v>20?'pos':(v<-20?'neg':''));
+  const intraColor=s=>({'持续活跃偏多':'pos','尾盘资金介入':'pos','放量下跌偏空':'neg','冲高回落风险':'neg'}[s]||'');
   let h='<table><thead><tr><th>排名</th><th class="lft">代码</th><th class="lft">名称</th><th class="lft">行业</th><th>最新价</th>'
-    +'<th>3日</th><th>5日</th><th>10日</th><th>RSI</th><th>量能比</th><th>5日↑概率</th><th>综合评分</th>'
+    +'<th>3日</th><th>5日</th><th>10日</th><th>RSI</th><th>量能比</th><th>5日↑概率</th>'
+    +'<th>高频参与度</th><th>资金方向</th><th>开盘30m</th><th>尾盘30m</th><th>活跃K线</th><th>量价同步</th><th class="lft">日内信号</th>'
+    +'<th>综合评分</th>'
     +'<th class="lft">信号</th><th class="lft">入选原因</th><th class="lft">风险提示</th><th class="lft">操作</th></tr></thead><tbody>';
   picks.forEach(p=>{
+    const a=p.activity_score, d=p.direction_score;
+    const hasHF=a!=null&&!isNaN(a);
     h+=`<tr><td>${p.rank}</td><td class="lft">${p.symbol}</td><td class="lft">${p.name||''}</td><td class="lft">${p.industry||'未分类'}</td>
     <td>${p.close}</td>
     <td class="${cls(p.ret_3||0)}">${fmtPct(p.ret_3||0)}</td><td class="${cls(p.ret_5||0)}">${fmtPct(p.ret_5||0)}</td><td class="${cls(p.ret_10||0)}">${fmtPct(p.ret_10||0)}</td>
     <td>${(p.rsi||0).toFixed(0)}</td><td>${(p.vol_ratio||0).toFixed(1)}x</td>
     <td class="${(p.prob_up_5d||0)>=0.5?'pos':'neg'}">${pc(p.prob_up_5d)}</td>
+    <td>${hasHF?a.toFixed(0)+'/100':'N/A'}</td>
+    <td class="${dirCls(d)}">${hasHF?(d>=0?'+':'')+d.toFixed(0):'N/A'}</td>
+    <td>${hasHF?pc(p.open30_amount_ratio):'N/A'}</td>
+    <td>${hasHF?pc(p.close30_amount_ratio):'N/A'}</td>
+    <td>${hasHF?pc(p.active_bar_ratio):'N/A'}</td>
+    <td>${hasHF?(p.volprice_sync||0).toFixed(0):'N/A'}</td>
+    <td class="lft ${intraColor(p.intraday_signal)}">${hasHF?(p.intraday_signal||''):'N/A'}</td>
     <td><b>${(p.final_score!=null?p.final_score.toFixed(0):'-')}</b></td>
     <td class="lft ${predSigClass(p.signal)}">${p.signal||''}</td>
     <td class="lft reason">${p.reason||''}</td><td class="lft reason">${p.risk||''}</td>

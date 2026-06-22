@@ -130,12 +130,18 @@ def cmd_screen(args) -> int:
     print("-" * 110)
     predictive = strat == "predictive_ranking"
     if predictive:
-        print(f"{'#':<3}{'代码':<11}{'名称':<9}{'最新价':>9}{'3日':>6}{'5日':>6}{'10日':>6}{'RSI':>5}{'量比':>6}{'5日↑':>6}{'综合':>6}  {'信号':<7}{'原因'}")
+        print(f"{'#':<3}{'代码':<11}{'名称':<9}{'最新价':>9}{'5日':>6}{'RSI':>5}{'量比':>6}{'5日↑':>6}"
+              f"{'参与度':>7}{'方向':>6}{'综合':>6}  {'日内信号':<10}{'信号':<7}{'原因'}")
         for p in res["picks"]:
+            a = p.get("activity_score")
+            has_hf = a is not None and a == a
+            act_s = f"{a:>6.0f}" if has_hf else f"{'N/A':>6}"
+            dir_s = f"{p.get('direction_score'):>+6.0f}" if has_hf else f"{'N/A':>6}"
+            isig = (p.get("intraday_signal") or "") if has_hf else "N/A"
             print(f"{p.get('rank',''):<3}{p.get('symbol',''):<11}{str(p.get('name','')):<9}{p.get('close',0):>9.2f}"
-                  f"{(p.get('ret_3') or 0)*100:>5.1f}%{(p.get('ret_5') or 0)*100:>5.1f}%{(p.get('ret_10') or 0)*100:>5.1f}%"
+                  f"{(p.get('ret_5') or 0)*100:>5.1f}%"
                   f"{p.get('rsi',0):>5.0f}{(p.get('vol_ratio') or 0):>5.1f}x{(p.get('prob_up_5d') or 0)*100:>5.0f}%"
-                  f"{(p.get('final_score') or 0):>6.1f}  {str(p.get('signal','')):<7}{str(p.get('reason',''))}")
+                  f"{act_s}{dir_s}{(p.get('final_score') or 0):>6.1f}  {isig:<10}{str(p.get('signal','')):<7}{str(p.get('reason',''))}")
     else:
         print(f"{'#':<3}{'代码':<11}{'名称':<10}{'行业':<7}{'最新价':>8}{'3日':>6}{'5日':>6}{'10日':>6}{'量比':>6}{'RSI':>5}{'评分':>7}  {'信号':<8}{'原因'}")
         for p in res["picks"]:
@@ -191,6 +197,52 @@ def cmd_data_status(args) -> int:
     print(f"  可离线选股: {'是' if s['ready_for_screening'] else '否'}")
     if not s["ready_for_screening"]:
         print(f"  → 请先运行: {s['update_command']}")
+    return 0
+
+
+def _symbols_arg(args):
+    s = getattr(args, "symbols", None)
+    return [x.strip() for x in s.split(",")] if s else None
+
+
+def cmd_intraday_update(args) -> int:
+    syms = _symbols_arg(args)
+    uni = getattr(args, "universe", None) or "hs300"
+    print(f"更新5分钟行情缓存: {'指定股票' if syms else uni}（AkShare/Sina；Ctrl+C 可中断并保留）")
+
+    def prog(i, total, sym, cached, success, failed, elapsed, src):
+        print(f"\r进度 {i}/{total} | {sym:<11} 缓存命中 {cached} 成功 {success} 失败 {failed} 用时 {elapsed:.0f}s   ",
+              end="", flush=True)
+
+    res = service.intraday_update(universe=uni, symbols=syms, force=getattr(args, "force", False), on_progress=prog)
+    print()
+    if not res.get("success"):
+        print("更新失败:", res.get("error"))
+        return 1
+    print(f"完成: 总 {res.get('total')} | 缓存命中 {res.get('cached')} | 新下载 {res.get('success')} | "
+          f"失败 {res.get('failed')} | 用时 {res.get('elapsed_seconds')}s")
+    print(f"有效分钟缓存: {res.get('valid_count')}/{res.get('universe_count')}")
+    return 0
+
+
+def cmd_intraday_status(args) -> int:
+    syms = _symbols_arg(args)
+    uni = getattr(args, "universe", None) or "hs800"
+    s = service.intraday_status(universe=uni, symbols=syms)
+    print(f"\n{s['universe']} 5分钟行情缓存状态:")
+    print(f"  总数: {s['universe_count']} | 已缓存: {s['cached_count']} | 有效: {s['valid_count']} | "
+          f"缺失: {s['missing_count']} | 过期: {s['stale_count']} | 上次失败: {s['failed_count']}")
+    print(f"  最后更新: {s['last_updated'] or '从未'}")
+    if syms:
+        fac = service.intraday_factors(syms)
+        print("  高频因子:")
+        for sym, f in fac.items():
+            a = f.get("activity_score")
+            if a != a or a is None:
+                print(f"    {sym}: 数据缺失(N/A)")
+            else:
+                print(f"    {sym}: 高频参与度 {a:.0f}/100 | 资金方向 {f.get('direction_score'):+.0f} | "
+                      f"信号 {f.get('intraday_signal')} | 冲高回落 {f.get('pullback_risk',0)*100:.1f}%")
     return 0
 
 
@@ -396,6 +448,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     dst = sub.add_parser("data-status", help="查看行情缓存状态(离线)", parents=[data])
     dst.set_defaults(func=cmd_data_status)
+
+    iu = sub.add_parser("intraday-update", help="更新5分钟行情缓存(联网)", parents=[data])
+    iu.add_argument("--force", action="store_true", help="强制重新下载")
+    iu.set_defaults(func=cmd_intraday_update)
+
+    ist = sub.add_parser("intraday-status", help="查看5分钟缓存与高频因子(离线)", parents=[data])
+    ist.set_defaults(func=cmd_intraday_status)
 
     pr = sub.add_parser("predict", help="预测上涨模型(未来3/5/10日)", parents=[data])
     pr.add_argument("--symbol", help="单只股票预测；不指定则看 Top")

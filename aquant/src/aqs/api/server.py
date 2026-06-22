@@ -79,6 +79,16 @@ def create_app() -> "FastAPI":
         return service.data_update(payload.get("universe", "hs800"),
                                    force=bool(payload.get("force", False)))
 
+    @app.get("/api/intraday/status")
+    def intraday_status(universe: str = "hs800") -> Dict[str, Any]:
+        return service.intraday_status(universe=universe)
+
+    @app.post("/api/intraday/update")
+    def intraday_update(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        payload = payload or {}
+        return service.intraday_update(universe=payload.get("universe", "hs300"),
+                                       force=bool(payload.get("force", False)))
+
     @app.post("/api/demo")
     def set_demo(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         payload = payload or {}

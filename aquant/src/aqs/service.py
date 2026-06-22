@@ -221,6 +221,62 @@ def data_update(universe: str = "hs800", force: bool = False, on_progress=None,
     return {"success": True, "universe": universe, **stats, **st}
 
 
+def _resolve_symbols_arg(universe: Optional[str], symbols: Optional[List[str]]):
+    """返回 (symbols, label)：优先用显式 symbols，否则按股票池解析。"""
+    if symbols:
+        return list(symbols), f"custom({len(symbols)})"
+    info = load_universe(universe or "hs800")
+    return info.get("symbols", []), (universe or "hs800")
+
+
+def intraday_update(universe: str = "hs300", symbols: Optional[List[str]] = None, force: bool = False,
+                    on_progress=None, per_symbol_timeout: float = 20.0) -> Dict[str, Any]:
+    """联网更新 5 分钟行情缓存到 data/cache/intraday_5m（与选股分离）。"""
+    from aqs.data import intraday_cache
+
+    syms, label = _resolve_symbols_arg(universe, symbols)
+    if not syms:
+        return {"success": False, "universe": label, "error": "股票池为空"}
+    stats = intraday_cache.update_intraday(syms, on_progress=on_progress, force=force,
+                                           per_symbol_timeout=per_symbol_timeout,
+                                           universe=label.lower())
+    return {"success": True, "universe": label, **stats, **intraday_cache.status(syms)}
+
+
+def intraday_status(universe: str = "hs800", symbols: Optional[List[str]] = None) -> Dict[str, Any]:
+    """5 分钟行情缓存状态（离线）。"""
+    from aqs.data import intraday_cache
+
+    syms, label = _resolve_symbols_arg(universe, symbols)
+    st = intraday_cache.status(syms)
+    upd = intraday_cache.load_update_stats(label.lower())
+    return {
+        "universe": label,
+        "universe_count": st["universe_count"],
+        "cached_count": st["cached_count"],
+        "valid_count": st["valid_count"],
+        "missing_count": st["missing_count"],
+        "stale_count": st["stale_count"],
+        "failed_count": int(upd.get("failed", 0)),
+        "last_updated": upd.get("last_updated"),
+        "update_command": f"aquant intraday-update --universe {label.lower()}",
+    }
+
+
+def intraday_factors(symbols: List[str]) -> Dict[str, Any]:
+    """返回若干股票的高频参与度/资金方向（离线，供验收/调试）。"""
+    from aqs.data import intraday_cache, bars_cache
+
+    out = {}
+    for s in symbols:
+        amt20 = None
+        b = bars_cache.load_bars(s)
+        if b is not None and "amount" in b:
+            amt20 = float(b["amount"].astype(float).tail(20).mean())
+        out[s] = intraday_cache.compute_intraday_factors(s, amt20)
+    return out
+
+
 def universe_data_status(universe: str = "hs800") -> Dict[str, Any]:
     """离线行情缓存状态（供 /api/data/status 与 CLI data-status）。"""
     from aqs.data import bars_cache
@@ -1298,8 +1354,10 @@ def screen_stocks(
             names = {s: (mdm.instrument(s).name if mdm.instrument(s) else "") for s in syms}
             sentiment, sent_meta = _sentiment_records(syms, names=names, asof=asof, use_cache=use_cache)
         uni_names = _LAST_UNIVERSE_NAMES if (universe is not None and str(universe) not in ("", "default")) else {}
+        from aqs.data import intraday_cache as _intra
+        _intraday_fn = lambda s, amt20: _intra.compute_intraday_factors(s, amt20)  # 离线读取分钟缓存
         df = predict_universe(mdm, universe=syms or None, asof=asof, top_n=top_n, sentiment=sentiment,
-                              min_amount=(1e7 if lenient else 5e7), names=uni_names)
+                              min_amount=(1e7 if lenient else 5e7), names=uni_names, intraday_fn=_intraday_fn)
         picks = df.reset_index().to_dict(orient="records") if not df.empty else []
         _fill_names(picks, uni_names)
         diag["final_count"] = len(picks)

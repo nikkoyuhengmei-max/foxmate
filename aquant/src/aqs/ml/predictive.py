@@ -164,6 +164,7 @@ def predict_universe(
     min_amount: float = 5e7,
     names: Optional[Dict[str, str]] = None,
     prefilter: int = 150,
+    intraday_fn=None,
 ) -> pd.DataFrame:
     from aqs.data.industry import industry_of
 
@@ -231,15 +232,28 @@ def predict_universe(
         keep = sorted(cur, key=lambda s: _quick(cur[s]), reverse=True)[:prefilter]
         cur = {s: cur[s] for s in keep}
 
+    # 高频参与度因子（离线，仅在最终评分集合上计算；缺失返回 N/A，不影响日线选股）
+    intra: Dict[str, dict] = {}
+    if intraday_fn is not None:
+        for sym, c in cur.items():
+            try:
+                intra[sym] = intraday_fn(sym, c.get("amount20")) or {}
+            except Exception:
+                intra[sym] = {}
+
     # 规则评分模型（无需训练，稳定快速）：横截面 z-score 合成上涨概率
+    _intra_keys = ["activity_score", "direction_score", "intraday_signal", "open30_amount_ratio",
+                   "close30_amount_ratio", "active_bar_ratio", "volprice_sync", "pullback_risk"]
     rows = []
     for sym, c in cur.items():
         s = (sentiment or {}).get(sym, {})
+        f = intra.get(sym, {})
         rows.append({**c,
                      "attention_score": s.get("attention_score", np.nan),
                      "sentiment_score": s.get("sentiment_score", np.nan),
                      "attention_change_3d": s.get("attention_change_3d"),
-                     "risk_keyword_count": s.get("risk_keyword_count", np.nan)})
+                     "risk_keyword_count": s.get("risk_keyword_count", np.nan),
+                     **{k: f.get(k, (np.nan if k != "intraday_signal" else "数据缺失")) for k in _intra_keys}})
     df = pd.DataFrame(rows).set_index("symbol")
     df = _rule_probabilities(df)
     df = _score_and_signal(df)
@@ -247,6 +261,8 @@ def predict_universe(
     df.insert(0, "rank", range(1, len(df) + 1))
     front = ["rank", "name", "industry", "close", "prob_up_3d", "prob_up_5d", "prob_up_10d",
              "expected_return_5d", "money_score", "tech_score", "sentiment_factor_score",
+             "activity_score", "direction_score", "intraday_signal", "open30_amount_ratio",
+             "close30_amount_ratio", "active_bar_ratio", "volprice_sync", "pullback_risk",
              "risk_score", "final_score", "signal", "reason", "risk"]
     cols = [c for c in front if c in df.columns] + [c for c in df.columns if c not in front and c != "feat"]
     return df[cols].head(top_n).round(4)
@@ -343,15 +359,42 @@ def _score_and_signal(df: pd.DataFrame) -> pd.DataFrame:
         out["sentiment_factor_score"] = np.nan
 
     prob100 = out["prob_up_5d"] * 100
-    # final_score = 概率30 量价20 趋势15 资金15 舆情10 风控10
-    if has_sent:
-        final = (0.30 * prob100 + 0.20 * out["volprice_score"] + 0.15 * out["trend_score"]
-                 + 0.15 * out["money_score"] + 0.10 * out["sentiment_factor_score"].fillna(50)
-                 + 0.10 * (100 - out["risk_score"]))
-    else:  # 舆情缺失：把 10% 权重并入概率
-        final = (0.40 * prob100 + 0.20 * out["volprice_score"] + 0.15 * out["trend_score"]
-                 + 0.15 * out["money_score"] + 0.10 * (100 - out["risk_score"]))
-    out["final_score"] = final.round(2)
+    trend_kline = _mm(out["trend_raw"] + 0.5 * np.sign(out["macd_hist"].fillna(0)))
+    money_dv = _mm(0.5 * out["money_raw"] + 0.5 * out["volprice_raw"])
+    risk_contrib = 100 - out["risk_score"]
+    # 高频参与度方向归一到 0–100（资金方向 -100..100 -> 0..100）
+    dir100 = (50 + out["direction_score"] / 2.0).clip(0, 100) if "direction_score" in out else pd.Series(np.nan, index=out.index)
+    act = out.get("activity_score", pd.Series(np.nan, index=out.index))
+
+    # 综合评分权重：概率30 趋势K线20 量价资金20 高频参与度10 高频方向5 舆情5 风控10
+    # 缺失因子按比例把权重分摊给其他可用因子（逐行归一化）。
+    sent_mask = out["sentiment_factor_score"].notna() if "sentiment_factor_score" in out else pd.Series(False, index=out.index)
+    intra_mask = act.notna()
+    comps = [
+        (prob100, 0.30, pd.Series(True, index=out.index)),
+        (trend_kline, 0.20, pd.Series(True, index=out.index)),
+        (money_dv, 0.20, pd.Series(True, index=out.index)),
+        (risk_contrib, 0.10, pd.Series(True, index=out.index)),
+        (out.get("sentiment_factor_score", pd.Series(np.nan, index=out.index)), 0.05, sent_mask),
+        (act, 0.10, intra_mask),
+        (dir100, 0.05, intra_mask),
+    ]
+    num = pd.Series(0.0, index=out.index)
+    den = pd.Series(0.0, index=out.index)
+    for val, w, mask in comps:
+        m = mask.astype(float)
+        num = num + val.fillna(0) * w * m
+        den = den + w * m
+    final = num / den.replace(0, np.nan)
+
+    # 高频规则调整（仅对有分钟数据的股票，且高频影响有限）
+    over = ((out["rsi"] > 72) | (out["ret_5"] > 0.15)).fillna(False)
+    pull = out.get("pullback_risk", pd.Series(np.nan, index=out.index))
+    bonus = pd.Series(0.0, index=out.index)
+    bonus += np.where(intra_mask & (act > 60) & (out["direction_score"] > 20) & (~over), 3.0, 0.0)
+    bonus += np.where(intra_mask & (act > 80) & (pull.fillna(0) > 0.03), -5.0, 0.0)   # 冲高回落风险惩罚
+    bonus += np.where(intra_mask & (act > 60) & (out["direction_score"] < -20), -3.0, 0.0)  # 活跃但偏空不加分
+    out["final_score"] = (final + bonus).clip(lower=0).round(2)
 
     out["signal"] = out.apply(_signal, axis=1)
     out["reason"] = out.apply(_reason, axis=1)
@@ -400,6 +443,10 @@ def _reason(r) -> str:
     if ac3 is not None and ac3 == ac3 and ac3 > 0.2:
         p.append("舆情近3日升温")
     p.append(f"预测未来5日上涨概率 {r['prob_up_5d']*100:.0f}%")
+    sig = r.get("intraday_signal")
+    act = r.get("activity_score")
+    if sig and sig != "数据缺失" and act == act:
+        p.append(f"日内{sig}(参与度{act:.0f}/方向{r.get('direction_score', 0):+.0f})")
     return "，".join(p)
 
 
@@ -415,6 +462,9 @@ def _risk(r) -> str:
         p.append("近5日回撤偏大")
     if r["rsi"] > 75:
         p.append("RSI偏高，注意回调")
+    pr = r.get("pullback_risk")
+    if pr == pr and pr is not None and pr > 0.03:
+        p.append(f"日内冲高回落{pr*100:.1f}%")
     return "，".join(p) or "风险可控"
 
 
