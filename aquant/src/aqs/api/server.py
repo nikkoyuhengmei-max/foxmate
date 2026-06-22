@@ -89,6 +89,20 @@ def create_app() -> "FastAPI":
         return service.intraday_update(universe=payload.get("universe", "hs300"),
                                        force=bool(payload.get("force", False)))
 
+    @app.get("/api/heat/status")
+    def heat_status() -> Dict[str, Any]:
+        return service.heat_status()
+
+    @app.get("/api/heat/show")
+    def heat_show(top: int = 100) -> Dict[str, Any]:
+        return service.heat_show(top=top)
+
+    @app.post("/api/heat/update")
+    def heat_update(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        payload = payload or {}
+        return service.heat_update(source=payload.get("source", "eastmoney"),
+                                   top=int(payload.get("top", 100)))
+
     @app.post("/api/demo")
     def set_demo(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         payload = payload or {}

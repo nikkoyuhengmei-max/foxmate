@@ -165,6 +165,7 @@ def predict_universe(
     names: Optional[Dict[str, str]] = None,
     prefilter: int = 150,
     intraday_fn=None,
+    heat: Optional[Dict[str, dict]] = None,
 ) -> pd.DataFrame:
     from aqs.data.industry import industry_of
 
@@ -244,16 +245,22 @@ def predict_universe(
     # 规则评分模型（无需训练，稳定快速）：横截面 z-score 合成上涨概率
     _intra_keys = ["activity_score", "direction_score", "intraday_signal", "open30_amount_ratio",
                    "close30_amount_ratio", "active_bar_ratio", "volprice_sync", "pullback_risk"]
+    heat = heat or {}
     rows = []
     for sym, c in cur.items():
         s = (sentiment or {}).get(sym, {})
         f = intra.get(sym, {})
+        h = heat.get(sym, {})
         rows.append({**c,
                      "attention_score": s.get("attention_score", np.nan),
                      "sentiment_score": s.get("sentiment_score", np.nan),
                      "attention_change_3d": s.get("attention_change_3d"),
                      "risk_keyword_count": s.get("risk_keyword_count", np.nan),
-                     **{k: f.get(k, (np.nan if k != "intraday_signal" else "数据缺失")) for k in _intra_keys}})
+                     **{k: f.get(k, (np.nan if k != "intraday_signal" else "数据缺失")) for k in _intra_keys},
+                     "heat_rank": h.get("heat_rank", np.nan),
+                     "heat_score": h.get("heat_score", np.nan),
+                     "heat_source": h.get("heat_source", ""),
+                     "heat_updated": h.get("heat_updated", "")})
     df = pd.DataFrame(rows).set_index("symbol")
     df = _rule_probabilities(df)
     df = _score_and_signal(df)
@@ -263,6 +270,7 @@ def predict_universe(
              "expected_return_5d", "money_score", "tech_score", "sentiment_factor_score",
              "activity_score", "direction_score", "intraday_signal", "open30_amount_ratio",
              "close30_amount_ratio", "active_bar_ratio", "volprice_sync", "pullback_risk",
+             "heat_rank", "heat_score", "heat_source", "heat_updated",
              "risk_score", "final_score", "signal", "reason", "risk"]
     cols = [c for c in front if c in df.columns] + [c for c in df.columns if c not in front and c != "feat"]
     return df[cols].head(top_n).round(4)
@@ -365,11 +373,13 @@ def _score_and_signal(df: pd.DataFrame) -> pd.DataFrame:
     # 高频参与度方向归一到 0–100（资金方向 -100..100 -> 0..100）
     dir100 = (50 + out["direction_score"] / 2.0).clip(0, 100) if "direction_score" in out else pd.Series(np.nan, index=out.index)
     act = out.get("activity_score", pd.Series(np.nan, index=out.index))
+    heat_s = out.get("heat_score", pd.Series(np.nan, index=out.index))
 
-    # 综合评分权重：概率30 趋势K线20 量价资金20 高频参与度10 高频方向5 舆情5 风控10
-    # 缺失因子按比例把权重分摊给其他可用因子（逐行归一化）。
+    # 综合评分权重：概率30 趋势K线20 量价资金20 高频参与度10 高频方向5 风控10 热度5（舆情可选5）
+    # 缺失因子按比例把权重分摊给其他可用因子（逐行归一化）。热度名义权重≤5%。
     sent_mask = out["sentiment_factor_score"].notna() if "sentiment_factor_score" in out else pd.Series(False, index=out.index)
     intra_mask = act.notna()
+    heat_mask = heat_s.notna()
     comps = [
         (prob100, 0.30, pd.Series(True, index=out.index)),
         (trend_kline, 0.20, pd.Series(True, index=out.index)),
@@ -378,6 +388,7 @@ def _score_and_signal(df: pd.DataFrame) -> pd.DataFrame:
         (out.get("sentiment_factor_score", pd.Series(np.nan, index=out.index)), 0.05, sent_mask),
         (act, 0.10, intra_mask),
         (dir100, 0.05, intra_mask),
+        (heat_s, 0.05, heat_mask),
     ]
     num = pd.Series(0.0, index=out.index)
     den = pd.Series(0.0, index=out.index)
@@ -394,6 +405,18 @@ def _score_and_signal(df: pd.DataFrame) -> pd.DataFrame:
     bonus += np.where(intra_mask & (act > 60) & (out["direction_score"] > 20) & (~over), 3.0, 0.0)
     bonus += np.where(intra_mask & (act > 80) & (pull.fillna(0) > 0.03), -5.0, 0.0)   # 冲高回落风险惩罚
     bonus += np.where(intra_mask & (act > 60) & (out["direction_score"] < -20), -3.0, 0.0)  # 活跃但偏空不加分
+
+    # 热度规则（热度高≠看多；最多小幅加减分）
+    if "heat_rank" in out:
+        very_hot = heat_mask & (out["heat_rank"] <= 30)
+        dir_neg = out["direction_score"].fillna(0) < 0
+        bullish = (out["ret_5"] > 0) & (out["above_ma20"]) & (out["money_raw"] > 1.0)
+        # 热度高 + 量价偏多 + 趋势向上 → 加分
+        bonus += np.where(very_hot & bullish & (~over), 3.0, 0.0)
+        # 热度高 + 价格下跌/资金偏空 → 不加分（反而轻罚）
+        bonus += np.where(very_hot & ((out["ret_5"] < 0) | dir_neg), -3.0, 0.0)
+        # 热度高 + 冲高回落 → 风险惩罚
+        bonus += np.where(very_hot & (pull.fillna(0) > 0.03), -4.0, 0.0)
     out["final_score"] = (final + bonus).clip(lower=0).round(2)
 
     out["signal"] = out.apply(_signal, axis=1)
@@ -405,13 +428,20 @@ def _score_and_signal(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _overheated(r) -> bool:
-    return (r["rsi"] > 80) or (r["ret_5"] > 0.25) or (r["boll_pctb"] > 1.1)
+    consec_limit = (r.get("ret1", 0) >= 0.095) and (r.get("ret_3", 0) >= 0.19)  # 近期连续涨停
+    return (r["rsi"] > 80) or (r["ret_5"] > 0.25) or (r["boll_pctb"] > 1.1) or consec_limit
+
+
+def _hf_bearish(r) -> bool:
+    a = r.get("activity_score"); d = r.get("direction_score")
+    return bool(a == a and d == d and a is not None and d is not None and a > 70 and d < -40)
 
 
 def _rule_excluded(r) -> bool:
     return bool(r["is_st"] or r["amount20"] < 5e7 or r["mdd5"] < -0.20
                 or (r["ret1"] < -0.06 and r["vol_spike"] > 1.5)         # 放量大跌
-                or (r["rsi"] > 85 and r["ret_5"] > 0.25))               # 严重过热
+                or (r["rsi"] > 85 and r["ret_5"] > 0.25)                # 严重过热
+                or _hf_bearish(r))                                       # 高频活跃但资金明显偏空
 
 
 def _signal(r) -> str:
@@ -447,6 +477,9 @@ def _reason(r) -> str:
     act = r.get("activity_score")
     if sig and sig != "数据缺失" and act == act:
         p.append(f"日内{sig}(参与度{act:.0f}/方向{r.get('direction_score', 0):+.0f})")
+    hr = r.get("heat_rank")
+    if hr == hr and hr is not None:
+        p.append(f"热度榜第{int(hr)}名")
     return "，".join(p)
 
 
@@ -465,6 +498,11 @@ def _risk(r) -> str:
     pr = r.get("pullback_risk")
     if pr == pr and pr is not None and pr > 0.03:
         p.append(f"日内冲高回落{pr*100:.1f}%")
+    if _hf_bearish(r):
+        p.append("高频活跃但资金明显偏空")
+    hr = r.get("heat_rank")
+    if hr == hr and hr is not None and hr <= 30:
+        p.append("热度高，注意情绪退潮与追高风险")
     return "，".join(p) or "风险可控"
 
 

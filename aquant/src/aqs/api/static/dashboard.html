@@ -92,7 +92,9 @@
           <option value="default_fast">快速测试池(约60只)</option>
           <option value="hs300">沪深300</option>
           <option value="zz500">中证500</option>
-          <option value="hs800" selected>沪深800(默认)</option>
+          <option value="hs800">沪深800</option>
+          <option value="hot100">热度榜前100</option>
+          <option value="hs800_hot100" selected>沪深800 × 热度榜前100(默认)</option>
           <option value="watchlist">自选股</option>
           <option value="all">全A股(较慢)</option>
         </select>
@@ -103,11 +105,13 @@
       <label class="sub"><input type="checkbox" id="lenient" onchange="runScreen()"> 宽松模式</label>
       <button id="updDataBtn" class="secondary" onclick="updateData()">更新真实行情</button>
       <button id="updIntraBtn" class="secondary" onclick="updateIntraday()">更新分钟行情</button>
+      <button id="updHeatBtn" class="secondary" onclick="updateHeat()">更新热度榜</button>
       <button id="runScreenBtn" onclick="runScreen()">运行离线选股</button>
       <button id="runBtBtn" class="secondary" onclick="runBacktest()">策略历史表现</button>
       <span id="msg" class="sub"></span>
     </div>
     <div class="sub" id="dataStatus" style="margin-top:8px"></div>
+    <div class="sub" id="heatStatus" style="margin-top:6px"></div>
     <div class="sub" id="stratHint" style="margin-top:8px"></div>
   </div>
 
@@ -223,10 +227,35 @@ async function init(){
     try{ await step(); }catch(e){ log((step.name||'step')+' 失败: '+e); }
   }
   log('工作台已加载，默认策略：短线强势股');
-  loadDataStatus();
+  loadDataStatus(); loadHeatStatus();
 }
 
-async function onUniverseChange(){ loadDataStatus(); }
+async function onUniverseChange(){ loadDataStatus(); loadHeatStatus(); }
+
+async function loadHeatStatus(){
+  const uni=document.getElementById('universe').value;
+  const box=document.getElementById('heatStatus');
+  if(uni!=='hot100'&&uni!=='hs800_hot100'){ box.textContent=''; return; }
+  try{
+    const s=await api('/api/heat/status');
+    if(!s.available){ box.innerHTML='<span style="color:#c62828">热度榜无缓存，请点击“更新热度榜”。</span>'; return; }
+    box.innerHTML='热度榜 <b>'+(s.source||'')+'</b>｜数据日期 '+s.date+'｜更新 '+(s.updated_at||'-')
+      +'｜数量 '+s.count+'｜与沪深800交集 '+(s.intersect_hs800!=null?s.intersect_hs800:'-')
+      +'｜历史快照 '+s.history_days+' 天';
+  }catch(e){ box.textContent='热度状态读取失败: '+e; }
+}
+
+async function updateHeat(){
+  if(!confirm('将联网更新东方财富人气榜前100到本地缓存。是否继续？')) return;
+  busy('updHeatBtn',true,'更新中…');
+  try{
+    const r=await api('/api/heat/update',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({source:'eastmoney',top:100})});
+    if(r.success===false){ log('热度榜更新失败: '+(r.error||'')+(r.stale?'（已保留旧缓存 '+r.last_date+'）':'')); }
+    else{ log('热度榜更新完成：'+r.count+' 只，日期 '+r.date); }
+  }catch(e){ log('热度榜更新异常: '+e); }
+  finally{ busy('updHeatBtn',false); loadHeatStatus(); }
+}
 
 async function loadDataStatus(){
   const uni=document.getElementById('universe').value;
@@ -492,6 +521,7 @@ function renderPredictive(picks){
   let h='<table><thead><tr><th>排名</th><th class="lft">代码</th><th class="lft">名称</th><th class="lft">行业</th><th>最新价</th>'
     +'<th>3日</th><th>5日</th><th>10日</th><th>RSI</th><th>量能比</th><th>5日↑概率</th>'
     +'<th>高频参与度</th><th>资金方向</th><th>开盘30m</th><th>尾盘30m</th><th>活跃K线</th><th>量价同步</th><th class="lft">日内信号</th>'
+    +'<th>热度排名</th><th>热度评分</th><th>热度来源</th><th>热度更新</th>'
     +'<th>综合评分</th>'
     +'<th class="lft">信号</th><th class="lft">入选原因</th><th class="lft">风险提示</th><th class="lft">操作</th></tr></thead><tbody>';
   picks.forEach(p=>{
@@ -509,6 +539,10 @@ function renderPredictive(picks){
     <td>${hasHF?pc(p.active_bar_ratio):'N/A'}</td>
     <td>${hasHF?(p.volprice_sync||0).toFixed(0):'N/A'}</td>
     <td class="lft ${intraColor(p.intraday_signal)}">${hasHF?(p.intraday_signal||''):'N/A'}</td>
+    <td>${(p.heat_rank!=null&&!isNaN(p.heat_rank))?('#'+p.heat_rank):'N/A'}</td>
+    <td>${(p.heat_score!=null&&!isNaN(p.heat_score))?p.heat_score.toFixed(0):'N/A'}</td>
+    <td>${p.heat_source||'N/A'}</td>
+    <td class="sub">${p.heat_updated||'N/A'}</td>
     <td><b>${(p.final_score!=null?p.final_score.toFixed(0):'-')}</b></td>
     <td class="lft ${predSigClass(p.signal)}">${p.signal||''}</td>
     <td class="lft reason">${p.reason||''}</td><td class="lft reason">${p.risk||''}</td>

@@ -177,6 +177,28 @@ def load_universe(name, source: Optional[str] = None, use_cache: bool = True,
                 "cache_file": directory._WATCHLIST_CSV, "updated_at": None,
                 "error": None if syms else "自选股为空，请先加入自选。", "errors": []}
 
+    if key in ("hot100", "hs800_hot100"):
+        from aqs.data import heat_rank
+        snap = heat_rank.load_latest()
+        if snap is None or len(snap) == 0:
+            return {"name": key, "source": "eastmoney", "symbols": [], "size": 0,
+                    "cache_file": heat_rank.latest_path(), "updated_at": None,
+                    "error": "热度榜缓存为空，请先运行：aquant heat-update --source eastmoney --top 100",
+                    "errors": [], "names": {}}
+        hot_syms = heat_rank.top_symbols(100)
+        hnames = heat_rank.names_map()
+        if key == "hs800_hot100":
+            from aqs.data import universe as U
+            hs800 = set(U.load("hs800", source=source, refresh=refresh or (not use_cache))["symbols"])
+            syms = [s for s in hot_syms if s in hs800]
+        else:
+            syms = hot_syms
+        return {"name": key, "source": "eastmoney", "symbols": syms, "size": len(syms),
+                "cache_file": heat_rank.latest_path(),
+                "updated_at": str(snap["snapshot_time"].iloc[0]) if "snapshot_time" in snap else None,
+                "error": None if syms else "热度榜与沪深800交集为空", "errors": [],
+                "names": {s: hnames.get(s, "") for s in syms}}
+
     if key in ("hs300", "zz500", "sz50", "all", "broad", "default_fast", "hs800"):
         from aqs.data import universe as U
         key = "all" if key == "broad" else key
@@ -275,6 +297,41 @@ def intraday_factors(symbols: List[str]) -> Dict[str, Any]:
             amt20 = float(b["amount"].astype(float).tail(20).mean())
         out[s] = intraday_cache.compute_intraday_factors(s, amt20)
     return out
+
+
+def heat_update(source: str = "eastmoney", top: int = 100, timeout: float = 15.0) -> Dict[str, Any]:
+    """联网更新热度榜缓存（与离线选股分离）。失败保留旧缓存。"""
+    from aqs.data import heat_rank
+    return heat_rank.update_heat(source=source, top=top, timeout=timeout)
+
+
+def heat_status() -> Dict[str, Any]:
+    """热度榜缓存状态（离线）。含与沪深800交集数量。"""
+    from aqs.data import heat_rank
+
+    st = heat_rank.status()
+    if st.get("available"):
+        try:
+            from aqs.data import universe as U
+            hs800 = set(U.load("hs800")["symbols"])
+            st["intersect_hs800"] = len([s for s in heat_rank.top_symbols(100) if s in hs800])
+        except Exception:
+            st["intersect_hs800"] = None
+    return st
+
+
+def heat_show(top: int = 100) -> Dict[str, Any]:
+    """读取本地热度榜缓存（离线），返回前 top 名。"""
+    from aqs.data import heat_rank
+
+    df = heat_rank.load_latest()
+    if df is None or len(df) == 0:
+        return {"available": False, "rows": [], "error": "热度榜缓存为空，请先运行 aquant heat-update"}
+    df = df.sort_values("rank").head(top)
+    return {"available": True, "date": str(df["date"].iloc[0]),
+            "snapshot_time": str(df["snapshot_time"].iloc[0]),
+            "source": str(df["source"].iloc[0]), "count": int(len(df)),
+            "rows": df.to_dict(orient="records")}
 
 
 def universe_data_status(universe: str = "hs800") -> Dict[str, Any]:
@@ -1355,9 +1412,12 @@ def screen_stocks(
             sentiment, sent_meta = _sentiment_records(syms, names=names, asof=asof, use_cache=use_cache)
         uni_names = _LAST_UNIVERSE_NAMES if (universe is not None and str(universe) not in ("", "default")) else {}
         from aqs.data import intraday_cache as _intra
+        from aqs.data import heat_rank as _heat
         _intraday_fn = lambda s, amt20: _intra.compute_intraday_factors(s, amt20)  # 离线读取分钟缓存
+        heat = _heat.heat_map(asof=asof)   # 离线：仅读热度缓存；回测用当日快照，缺失则无热度
         df = predict_universe(mdm, universe=syms or None, asof=asof, top_n=top_n, sentiment=sentiment,
-                              min_amount=(1e7 if lenient else 5e7), names=uni_names, intraday_fn=_intraday_fn)
+                              min_amount=(1e7 if lenient else 5e7), names=uni_names,
+                              intraday_fn=_intraday_fn, heat=heat)
         picks = df.reset_index().to_dict(orient="records") if not df.empty else []
         _fill_names(picks, uni_names)
         diag["final_count"] = len(picks)

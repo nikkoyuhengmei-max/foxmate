@@ -246,6 +246,50 @@ def cmd_intraday_status(args) -> int:
     return 0
 
 
+def cmd_heat_update(args) -> int:
+    src = getattr(args, "heat_source", None) or "eastmoney"
+    top = getattr(args, "top", 100) or 100
+    print(f"更新热度榜: 来源 {src} Top {top}（官方接口，含网络超时；Ctrl+C 可退出）")
+    res = service.heat_update(source=src, top=top)
+    if not res.get("success"):
+        print(f"更新失败: {res.get('error')}")
+        if res.get("stale"):
+            print(f"已保留旧缓存（日期 {res.get('last_date')}，{res.get('count')} 只），未覆盖。")
+        return 1
+    print(f"完成: {res['count']} 只 | 日期 {res['date']} | 快照时间 {res['snapshot_time']}")
+    return 0
+
+
+def cmd_heat_status(args) -> int:
+    s = service.heat_status()
+    if not s.get("available"):
+        print("热度榜缓存：无（请先运行 aquant heat-update --source eastmoney --top 100）")
+        return 0
+    print("\n热度榜缓存状态:")
+    print(f"  数据日期:   {s['date']}")
+    print(f"  快照时间:   {s['snapshot_time']}")
+    print(f"  数据来源:   {s['source']}")
+    print(f"  数量:       {s['count']}")
+    print(f"  与沪深800交集: {s.get('intersect_hs800')}")
+    print(f"  历史快照天数: {s['history_days']}")
+    print(f"  最后更新:   {s['updated_at']}")
+    return 0
+
+
+def cmd_heat_show(args) -> int:
+    top = getattr(args, "top", 100) or 100
+    res = service.heat_show(top=top)
+    if not res.get("available"):
+        print(res.get("error")); return 1
+    print(f"\n热度榜 Top {res['count']}  日期 {res['date']}  来源 {res['source']}  快照 {res['snapshot_time']}")
+    print(f"{'排名':<5}{'代码':<11}{'名称':<9}{'最新价':>9}{'涨跌幅':>8}{'热度分':>7}")
+    for r in res["rows"]:
+        pc = r.get("pct_change")
+        print(f"{int(r['rank']):<5}{r['symbol']:<11}{str(r.get('name','')):<9}"
+              f"{(r.get('latest_price') or 0):>9.2f}{(pc if pc is not None else 0):>7.1f}%{r.get('heat_score',0):>7.0f}")
+    return 0
+
+
 def cmd_universe(args) -> int:
     name = getattr(args, "universe", None) or "hs300"
     src = getattr(args, "source", None)
@@ -455,6 +499,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     ist = sub.add_parser("intraday-status", help="查看5分钟缓存与高频因子(离线)", parents=[data])
     ist.set_defaults(func=cmd_intraday_status)
+
+    hu = sub.add_parser("heat-update", help="更新热度榜缓存(联网)")
+    hu.add_argument("--source", dest="heat_source", default="eastmoney", help="热度来源(eastmoney)")
+    hu.add_argument("--top", type=int, default=100, help="前 N 名")
+    hu.set_defaults(func=cmd_heat_update)
+
+    hs = sub.add_parser("heat-status", help="查看热度榜缓存状态(离线)")
+    hs.set_defaults(func=cmd_heat_status)
+
+    hsh = sub.add_parser("heat-show", help="显示本地热度榜(离线)")
+    hsh.add_argument("--top", type=int, default=100, help="前 N 名")
+    hsh.set_defaults(func=cmd_heat_show)
 
     pr = sub.add_parser("predict", help="预测上涨模型(未来3/5/10日)", parents=[data])
     pr.add_argument("--symbol", help="单只股票预测；不指定则看 Top")
