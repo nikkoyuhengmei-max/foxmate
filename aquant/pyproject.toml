@@ -18,6 +18,7 @@ keywords = ["quant", "trading", "a-share", "backtest", "risk", "compliance"]
 dependencies = [
     "numpy>=1.23",
     "pandas>=1.5",
+    "fastparquet>=2023.0",
 ]
 
 [project.optional-dependencies]

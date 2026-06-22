@@ -88,7 +88,7 @@
       <label class="sub"><input type="checkbox" id="advToggle" onchange="toggleAdv()"> 高级/实验策略</label>
       <select id="advStrategy" class="hidden" onchange="useAdv()"></select>
       <label>股票池
-        <select id="universe" onchange="runScreen()">
+        <select id="universe" onchange="onUniverseChange()">
           <option value="default_fast">快速测试池(约60只)</option>
           <option value="hs300">沪深300</option>
           <option value="zz500">中证500</option>
@@ -101,10 +101,12 @@
       <label class="sub"><input type="checkbox" id="exclBlue" checked onchange="runScreen()"> 排除超大市值慢速蓝筹</label>
       <label class="sub"><input type="checkbox" id="useSent" onchange="runScreen()"> 舆情因子(辅助)</label>
       <label class="sub"><input type="checkbox" id="lenient" onchange="runScreen()"> 宽松模式</label>
-      <button id="runScreenBtn" onclick="runScreen()">运行选股</button>
+      <button id="updDataBtn" class="secondary" onclick="updateData()">更新真实行情</button>
+      <button id="runScreenBtn" onclick="runScreen()">运行离线选股</button>
       <button id="runBtBtn" class="secondary" onclick="runBacktest()">策略历史表现</button>
       <span id="msg" class="sub"></span>
     </div>
+    <div class="sub" id="dataStatus" style="margin-top:8px"></div>
     <div class="sub" id="stratHint" style="margin-top:8px"></div>
   </div>
 
@@ -220,7 +222,41 @@ async function init(){
     try{ await step(); }catch(e){ log((step.name||'step')+' 失败: '+e); }
   }
   log('工作台已加载，默认策略：短线强势股');
-  runScreen();
+  loadDataStatus();
+}
+
+async function onUniverseChange(){ loadDataStatus(); }
+
+async function loadDataStatus(){
+  const uni=document.getElementById('universe').value;
+  const box=document.getElementById('dataStatus');
+  if(uni==='watchlist'){ box.textContent=''; return; }
+  box.textContent='读取行情缓存状态…';
+  try{
+    const s=await api('/api/data/status?universe='+encodeURIComponent(uni));
+    const ready=s.ready_for_screening;
+    box.innerHTML='当前股票池 <b>'+s.universe+'</b>｜原始 '+s.universe_count
+      +'｜已缓存 '+s.cached_count+'｜有效 <b style="color:'+(ready?'#2e7d32':'#c62828')+'">'+s.valid_count+'</b>'
+      +'｜缺失 '+s.missing_count+'｜过期 '+s.stale_count+'｜失败 '+(s.failed_count||0)
+      +'｜更新 '+(s.last_updated||'从未')
+      +(ready?'｜<span style="color:#2e7d32">可离线选股</span>'
+             :'｜<span style="color:#c62828">行情不足，请先“更新真实行情”</span>');
+  }catch(e){ box.textContent='状态读取失败: '+e; }
+}
+
+async function updateData(){
+  const uni=document.getElementById('universe').value;
+  if(uni==='watchlist'){ alert('自选股无需批量更新'); return; }
+  if(!confirm('将联网下载 '+uni+' 历史行情到本地缓存，可能耗时较久。是否继续？')) return;
+  busy('updDataBtn',true,'更新中…');
+  document.getElementById('dataStatus').textContent='正在联网更新行情缓存（请勿关闭页面）…';
+  try{
+    const r=await api('/api/data/update',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({universe:uni})});
+    if(r.success===false){ log('行情更新失败: '+(r.error||'')); }
+    else{ log('行情更新完成：缓存命中 '+r.cached+'，新下载 '+r.success+'，失败 '+r.failed+'，用时 '+r.elapsed_seconds+'s'); }
+  }catch(e){ log('行情更新异常: '+e); }
+  finally{ busy('updDataBtn',false); loadDataStatus(); }
 }
 
 async function loadTimingMode(){

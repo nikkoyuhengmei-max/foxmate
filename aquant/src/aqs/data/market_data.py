@@ -170,6 +170,48 @@ class MarketDataManager:
         return mgr
 
     @classmethod
+    def from_cache(cls, symbols, names: Optional[dict] = None, benchmark: str = "000300.SH",
+                   config: SystemConfig = DEFAULT_CONFIG) -> "MarketDataManager":
+        """离线构建：仅从本地行情缓存 data/cache/bars 读取，不联网。"""
+        from aqs.data import bars_cache
+        from aqs.data.industry import industry_of
+        from aqs.data.instruments import AssetType, Instrument, classify_board
+        from aqs.data.sample_data import SampleDataset
+
+        names = names or {}
+        bars: Dict[str, pd.DataFrame] = {}
+        instruments: Dict[str, Instrument] = {}
+        adj: Dict[str, pd.Series] = {}
+        for sym in symbols:
+            df = bars_cache.load_bars(sym)
+            if df is None or df.empty:
+                continue
+            bars[sym] = df
+            adj[sym] = pd.Series(1.0, index=df.index)
+            nm = names.get(sym, "")
+            instruments[sym] = Instrument(symbol=sym, name=nm, asset_type=AssetType.STOCK,
+                                          board=classify_board(sym), industry=industry_of(sym),
+                                          is_st=("ST" in (nm or "").upper()))
+        bench_df = bars_cache.load_bars(benchmark)
+        bench = bench_df if bench_df is not None else pd.DataFrame()
+        from aqs.data.calendar import TradingCalendar
+        if len(bench):
+            cal = TradingCalendar.from_index(bench.index)
+        elif bars:
+            idx = None
+            for d in bars.values():
+                idx = d.index if idx is None else idx.union(d.index)
+            cal = TradingCalendar.from_index(pd.DatetimeIndex(idx)) if idx is not None else TradingCalendar()
+        else:
+            cal = TradingCalendar()
+        ds = SampleDataset(instruments=instruments, bars=bars, benchmark=bench,
+                           benchmark_symbol=benchmark, adj_factors=adj,
+                           fundamentals=pd.DataFrame(), calendar=cal)
+        mgr = cls(config)
+        mgr.load_dataset(ds)
+        return mgr
+
+    @classmethod
     def from_qmt(
         cls,
         symbols,

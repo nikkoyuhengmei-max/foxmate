@@ -69,6 +69,16 @@ def create_app() -> "FastAPI":
     def data_check() -> Dict[str, Any]:
         return service.data_source_check()
 
+    @app.get("/api/data/status")
+    def data_status_universe(universe: str = "hs800") -> Dict[str, Any]:
+        return service.universe_data_status(universe)
+
+    @app.post("/api/data/update")
+    def data_update(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        payload = payload or {}
+        return service.data_update(payload.get("universe", "hs800"),
+                                   force=bool(payload.get("force", False)))
+
     @app.post("/api/demo")
     def set_demo(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         payload = payload or {}

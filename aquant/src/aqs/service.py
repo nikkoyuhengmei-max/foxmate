@@ -204,6 +204,46 @@ def resolve_universe(universe) -> List[str]:
     return info.get("symbols", [])
 
 
+def data_update(universe: str = "hs800", force: bool = False, on_progress=None,
+                per_symbol_timeout: float = 20.0, config: SystemConfig = DEFAULT_CONFIG) -> Dict[str, Any]:
+    """联网更新历史行情缓存到 data/cache/bars（AkShare 优先，Baostock 补缺）。"""
+    from aqs.data import bars_cache
+
+    info = load_universe(universe)
+    syms = info.get("symbols", [])
+    if not syms:
+        return {"success": False, "universe": universe, "error": info.get("error") or "股票池为空"}
+    targets = list(dict.fromkeys(syms + [DATA_CFG["benchmark"]]))
+    stats = bars_cache.update_bars(targets, DATA_CFG["start"], DATA_CFG["end"],
+                                   on_progress=on_progress, force=force,
+                                   per_symbol_timeout=per_symbol_timeout, universe=str(universe).lower())
+    st = bars_cache.status(syms)
+    return {"success": True, "universe": universe, **stats, **st}
+
+
+def universe_data_status(universe: str = "hs800") -> Dict[str, Any]:
+    """离线行情缓存状态（供 /api/data/status 与 CLI data-status）。"""
+    from aqs.data import bars_cache
+
+    info = load_universe(universe)
+    syms = info.get("symbols", [])
+    st = bars_cache.status(syms)
+    upd = bars_cache.load_update_stats(str(universe).lower())
+    gate = bars_cache.VALID_GATES.get(str(universe).lower(), 1)
+    return {
+        "universe": universe,
+        "universe_count": st["universe_count"],
+        "cached_count": st["cached_count"],
+        "valid_count": st["valid_count"],
+        "missing_count": st["missing_count"],
+        "stale_count": st["stale_count"],
+        "failed_count": int(upd.get("failed", 0)),
+        "last_updated": upd.get("last_updated"),
+        "ready_for_screening": st["valid_count"] >= gate,
+        "update_command": f"aquant data-update --universe {str(universe).lower()}",
+    }
+
+
 def universe_status(name: str) -> Dict[str, Any]:
     """股票池诊断状态（供 /api/universe/status）。"""
     info = load_universe(name)
@@ -1197,42 +1237,54 @@ def screen_stocks(
     """按所选策略画像筛选 Top N 候选股（含信号/选中原因/风险提示）。"""
     from aqs.research.screener import Screener, ScreenConfig, PROFILES, ShortStrengthProfile
 
-    diag: Dict[str, Any] = {"universe": str(universe) if universe else "default"}
+    from aqs.data import bars_cache
+
+    uni_key = str(universe).lower() if universe else "default"
+    diag: Dict[str, Any] = {"universe": uni_key}
+
+    # 解析股票池代码与名称
     if universe is not None and str(universe) not in ("", "default"):
-        uni_key = str(universe).lower()
         resolved = resolve_universe(universe)
         meta = dict(_LAST_UNIVERSE_META)
+        uni_names = dict(_LAST_UNIVERSE_NAMES)
         _ACTUAL["universe"] = meta
         diag.update({"source": meta.get("source"), "raw_count": meta.get("size", 0),
                      "cache_path": meta.get("cache_file"), "updated_at": meta.get("updated_at"),
                      "errors": meta.get("errors", [])})
-        # 数量门槛：低于阈值直接报错，不运行模型，也不回退小样本池
-        gate = _INDEX_MIN.get(uni_key)
         diag["stage"] = "load_universe"
         if uni_key == "watchlist" and meta.get("size", 0) < 1:
             return _screen_err(strategy, "自选股为空，请先加入自选。", diag)
         if meta.get("error"):
-            diag["empty_reason"] = "数据源没有返回股票（接口失败/缓存为空）"
             return _screen_err(strategy, meta["error"], diag)
-        if gate and meta.get("size", 0) < gate:
-            return _screen_err(strategy, f"股票池数量异常，当前仅 {meta.get('size', 0)} 只（{uni_key} 期望≥{gate}），请检查数据源或股票池配置。", diag)
-        diag["stage"] = "load_bars"
-        mdm, syms = _manager_for_universe(resolved, config, use_cache=use_cache)
-        diag["loaded_count"] = len(syms)
-        if not syms:
-            diag["empty_reason"] = "行情数据未返回：数据源接口失败/网络/代码格式问题"
-            if _ACTUAL.get("error"):
-                diag.setdefault("errors", []).append(_ACTUAL["error"])
-            return _screen_err(strategy, "已取到成分股，但行情数据未返回（请检查 Baostock/AkShare 行情接口或网络）。", diag)
+        gate0 = _INDEX_MIN.get(uni_key)
+        if gate0 and meta.get("size", 0) < gate0:
+            return _screen_err(strategy, f"股票池数量异常，当前仅 {meta.get('size', 0)} 只（{uni_key} 期望≥{gate0}）。", diag)
     else:
-        mdm = get_data_manager(config)
-        syms = list(mdm.symbols)
-        _ACTUAL["universe"] = {"name": "default", "source": active_source(), "size": len(syms),
-                               "cache_file": None, "updated_at": None, "error": None}
-        diag.update({"source": active_source(), "raw_count": len(syms), "loaded_count": len(syms)})
+        resolved = list(DATA_CFG["symbols"])
+        uni_names = {}
+        diag.update({"source": "default", "raw_count": len(resolved)})
 
-    # 分层过滤诊断
-    diag.update(_filter_diagnostics(mdm, syms, min_amount if not lenient else min(min_amount, 1e7)))
+    # 示例/演示模式：用示例数据（离线）；真实模式：仅读本地行情缓存（离线，禁止联网）
+    if DATA_CFG.get("demo_mode") or DATA_CFG["source"] == "sample":
+        mdm = get_data_manager(config)
+        syms = [s for s in resolved if s in mdm.symbols]
+        diag.update({"source": "sample", "loaded_count": len(syms), "valid_count": len(syms),
+                     "missing_count": len(resolved) - len(syms), "stale_count": 0})
+    else:
+        diag["stage"] = "load_cache"
+        st = bars_cache.status(resolved)
+        diag.update({"cached_count": st["cached_count"], "valid_count": st["valid_count"],
+                     "missing_count": st["missing_count"], "stale_count": st["stale_count"]})
+        valid_gate = bars_cache.VALID_GATES.get(uni_key, 1 if uni_key in ("default", "custom") else 1)
+        if st["valid_count"] < valid_gate:
+            cmd = f"aquant data-update --universe {uni_key if uni_key not in ('default','custom') else 'hs800'}"
+            diag["empty_reason"] = (f"本地有效行情仅 {st['valid_count']} 只（需≥{valid_gate}）："
+                                    f"缺失 {st['missing_count']} 只、过期 {st['stale_count']} 只。请先离线更新行情。")
+            return _screen_err(strategy, f"行情缓存不足，无法离线选股。{diag['empty_reason']} 运行：{cmd}", diag)
+        mdm = MarketDataManager.from_cache(resolved, names=uni_names, benchmark=DATA_CFG["benchmark"], config=config)
+        syms = [s for s in resolved if s in mdm.symbols and bars_cache.is_valid(s)]
+        diag["loaded_count"] = len(syms)
+        _ACTUAL.update({"is_real": True, "using_mock": False, "source": "cache"})
 
     sessions = mdm.trading_dates(end=asof) if asof else mdm.trading_dates()
     asof_date = asof or (str(sessions[-1].date()) if len(sessions) else None)
